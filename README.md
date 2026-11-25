@@ -20,6 +20,8 @@ Linked apps get access as their own identity, one per application and environmen
 
 **Workload Identity sameness:** the grant goes to `ns/<namespace>/sa/np-<application id>-<environment>` in the project's pool (`<project>.svc.id.goog`), which every GKE cluster with Workload Identity in that project shares. A pod with the same namespace and service account name in another cluster of the project gets the same access. Keep one cluster per project, or one trusted set of clusters, when you use this link.
 
+**Predictable names:** the link grants access to `np-<application id>-<environment>` before that service account exists, so anyone who can create a service account with that name in the apps' namespace gets the access. Only the nullplatform agent (and cluster admins) should be able to create service accounts in that namespace.
+
 ## Install
 - `specs/requirements/gcp`: roles for the agent's Kubernetes service account (Workload Identity): `storage.admin` limited to `np-gcs-*` buckets (keep the tfstate bucket outside that prefix), plus a custom role to create and list buckets; no service account roles (the link grants on the bucket, which `storage.admin` on `np-gcs-*` covers). Object access on the tfstate bucket only under `gcs-bucket/`, unless another install already grants it (`grant_tfstate_access = false`; then that grant applies, as the worker shares the agent's identity).
 - Worker image: `Dockerfile` (`NP_PACKAGE_NAME=gcp-cloud-storage-bucket`), with `tofu`.
