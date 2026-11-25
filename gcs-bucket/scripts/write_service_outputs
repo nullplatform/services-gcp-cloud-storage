@@ -1,0 +1,29 @@
+#!/bin/bash
+set -euo pipefail
+
+# Writes the bucket's name, URL, project and location back to the service, so
+# every linked app gets GCS_BUCKET_NAME and the stable name survives updates.
+
+cd "$OUTPUT_DIR"
+SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id')
+
+if ! OUT=$(tofu output -json 2>&1); then
+  echo "ERROR: 'tofu output -json' failed; service attributes NOT patched:" >&2
+  echo "$OUT" >&2
+  exit 1
+fi
+
+ATTRS=$(printf '%s' "$OUT" | jq -c '{
+  bucket_name: .bucket_name.value,
+  bucket_url:  .bucket_url.value,
+  project_id:  .project_id.value,
+  location:    .location.value
+} | with_entries(select(.value != null and .value != ""))')
+
+if [ "$(echo "$ATTRS" | jq -r '.bucket_name // ""')" = "" ]; then
+  echo "ERROR: no bucket_name output; service attributes NOT patched" >&2
+  exit 1
+fi
+
+echo "Updating service ${SERVICE_ID}: $(echo "$ATTRS" | jq -c .)"
+np service patch --id "$SERVICE_ID" --body "{\"attributes\": $ATTRS}"
