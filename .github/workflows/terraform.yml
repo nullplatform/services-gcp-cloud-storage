@@ -12,6 +12,7 @@ jobs:
       matrix:
         module:
           - gcs-bucket/deployment
+          - gcs-bucket/permissions
           - gcs-bucket/specs/requirements/gcp
     steps:
       - uses: actions/checkout@v7
