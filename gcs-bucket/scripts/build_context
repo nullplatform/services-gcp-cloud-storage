@@ -200,14 +200,12 @@ if [ "${ACTION_SOURCE:-}" = "link" ]; then
   # np-<application id>-<environment>, in the namespace the app's scopes run in.
   # The name is derived, not looked up: the binding can exist before the service
   # account does, and every scope of the app in that environment shares it.
-  APP_K8S_NAMESPACE=$(yaml_value "app_k8s_namespace" "$VALUES")
-  APP_K8S_NAMESPACE="${APP_K8S_NAMESPACE:-nullplatform}"
-  if [[ ! "$APP_K8S_NAMESPACE" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] \
-     || [ "$APP_K8S_NAMESPACE" = "default" ] || [[ "$APP_K8S_NAMESPACE" == kube-* ]]; then
-    echo "ERROR: invalid app_k8s_namespace '${APP_K8S_NAMESPACE}' (a Kubernetes namespace name, never default or kube-*)" >&2
-    exit 1
-  fi
+  # app_k8s_namespace mirrors the scopes' cluster.namespace: a fixed name, or a
+  # pattern rendered below.
+  APP_K8S_NAMESPACE_CONFIG=$(yaml_value "app_k8s_namespace" "$VALUES")
+  APP_K8S_NAMESPACE_CONFIG="${APP_K8S_NAMESPACE_CONFIG:-nullplatform}"
 
+  APP_K8S_NAMESPACE=""
   LINK_ENVIRONMENT=""
   APP_K8S_SERVICE_ACCOUNT=""
   if [ "$(echo "$CONTEXT" | jq -r '.type // ""')" != "delete" ]; then
@@ -216,6 +214,7 @@ if [ "${ACTION_SOURCE:-}" = "link" ]; then
     # notification carries only the scope id, from the API. An unlink needs none:
     # destroy revokes what the link's state holds.
     LINK_SCOPE_ID=$(echo "$CONTEXT" | jq -r '.link.scope.id // "" | tostring')
+    LINK_SCOPE=$(echo "$CONTEXT" | jq -c '.link.scope // {} | if type == "object" then . else {} end')
     LINK_ENVIRONMENT=$(echo "$CONTEXT" | jq -r '.link.dimensions.environment // .link.scope.dimensions.environment // ""')
     if [ -z "$LINK_ENVIRONMENT" ] && [ -n "$LINK_SCOPE_ID" ]; then
       if [[ ! "$LINK_SCOPE_ID" =~ ^[0-9]+$ ]]; then
@@ -227,6 +226,7 @@ if [ "${ACTION_SOURCE:-}" = "link" ]; then
         exit 1
       fi
       LINK_ENVIRONMENT=$(printf '%s' "$SCOPE_OUT" | jq -r '.dimensions.environment // ""' 2>/dev/null) || LINK_ENVIRONMENT=""
+      LINK_SCOPE=$(printf '%s' "$SCOPE_OUT" | jq -c '. // {}' 2>/dev/null) || LINK_SCOPE='{}'
     fi
     if [ -z "$LINK_ENVIRONMENT" ]; then
       echo "ERROR: link ${LINK_ID} has no environment: link the service to an environment dimension, or to a scope that has one." >&2
@@ -255,6 +255,54 @@ if [ "${ACTION_SOURCE:-}" = "link" ]; then
       exit 1
     fi
     APP_K8S_SERVICE_ACCOUNT="${_prefix}${_env}"
+
+    # The namespace, as nullplatform/scopes resolves cluster.namespace
+    # (k8s/utils/resolve_k8s_namespace): a value without "{" is used as is; a
+    # pattern is rendered by the scopes' engine (scripts/render_k8s_namespace)
+    # with a 63-character budget, against a context shaped like the scope's:
+    # .application, .namespace and .account (id and slug, from the API), and
+    # .scope, the linked scope with .dimensions set to the link's dimensions (for
+    # a link to dimensions, only .scope.dimensions). A placeholder with no value
+    # here, e.g. {.scope.slug} on a link to dimensions, fails the link.
+    # Not mirrored: the scopes keep the namespace a scope already runs in when
+    # the pattern changes later, and check the namespace in the cluster.
+    if [[ "$APP_K8S_NAMESPACE_CONFIG" == *"{"* ]]; then
+      _np_read() { # <entity> <id>: prints the entity as JSON or fails the link
+        local out
+        if [[ ! "$2" =~ ^[0-9]+$ ]] || ! out=$(np "$1" read --id "$2" --format json 2>&1); then
+          echo "ERROR: could not read ${1} '${2}' to render app_k8s_namespace '${APP_K8S_NAMESPACE_CONFIG}': ${out:-invalid id}" >&2
+          return 1
+        fi
+        printf '%s' "$out"
+      }
+      _app=$(_np_read application "$APPLICATION_ID") || exit 1
+      _ns='{}'; _acc='{}'
+      if [[ "$APP_K8S_NAMESPACE_CONFIG" == *"{.namespace"* || "$APP_K8S_NAMESPACE_CONFIG" == *"{.account"* ]]; then
+        _ns=$(_np_read namespace "$(printf '%s' "$_app" | jq -r '.namespace_id // ""')") || exit 1
+      fi
+      if [[ "$APP_K8S_NAMESPACE_CONFIG" == *"{.account"* ]]; then
+        _acc=$(_np_read account "$(printf '%s' "$_ns" | jq -r '.account_id // ""')") || exit 1
+      fi
+      _render_context=$(jq -nc --argjson app "$_app" --argjson ns "$_ns" --argjson acc "$_acc" \
+        --argjson scope "$LINK_SCOPE" --argjson link_dims "$(echo "$CONTEXT" | jq -c '.link.dimensions // {}')" '
+        { application: {id: $app.id, slug: $app.slug},
+          namespace: {id: $ns.id, slug: $ns.slug},
+          account: {id: $acc.id, slug: $acc.slug},
+          scope: ($scope + {dimensions: (($scope.dimensions // {}) + $link_dims)}) }')
+      # shellcheck source=/dev/null
+      source "$SERVICE_PATH/scripts/render_k8s_namespace"
+      if ! APP_K8S_NAMESPACE=$(CONTEXT="$_render_context" np_name_render 63 "$APP_K8S_NAMESPACE_CONFIG"); then
+        echo "ERROR: could not render app_k8s_namespace '${APP_K8S_NAMESPACE_CONFIG}' for link ${LINK_ID} (see the message above)" >&2
+        exit 1
+      fi
+    else
+      APP_K8S_NAMESPACE="$APP_K8S_NAMESPACE_CONFIG"
+    fi
+    if [ "${#APP_K8S_NAMESPACE}" -gt 63 ] || [[ ! "$APP_K8S_NAMESPACE" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] \
+       || [ "$APP_K8S_NAMESPACE" = "default" ] || [[ "$APP_K8S_NAMESPACE" == kube-* ]]; then
+      echo "ERROR: app_k8s_namespace '${APP_K8S_NAMESPACE_CONFIG}' gives '${APP_K8S_NAMESPACE}', not a valid Kubernetes namespace (DNS-1123 label, never default or kube-*)" >&2
+      exit 1
+    fi
     echo "Link ${LINK_ID}: application ${APPLICATION_ID}, environment '${LINK_ENVIRONMENT}' -> ${APP_K8S_NAMESPACE}/${APP_K8S_SERVICE_ACCOUNT}"
   fi
 

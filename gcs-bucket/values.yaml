@@ -19,6 +19,8 @@ tfstate_bucket: ""
 
 # Link only. app_k8s_namespace: the Kubernetes namespace the linked apps' scopes
 # run in, where the scopes (IAM.MODE gke) create np-<application id>-<environment>.
-# Empty means "nullplatform", the Containers scope's default. One namespace for
-# every app: set it to the scopes' cluster.namespace when that is a fixed name.
+# Set it to the scopes' cluster.namespace: a fixed name, or the same pattern,
+# e.g. "{.namespace.slug}" or "{.namespace.slug}-{.scope.dimensions.environment}",
+# rendered per link as the scopes render it. Empty means "nullplatform", the
+# Containers scope's default.
 app_k8s_namespace: ""
