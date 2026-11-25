@@ -10,9 +10,9 @@ The worker runs as the agent's Kubernetes service account through Workload Ident
 
 Linked apps get access as their own identity, one per application and environment, so only the linked app reaches the bucket. This **requires the scopes to run with `IAM.ENABLED: true` and `IAM.MODE: gke`** ([nullplatform/scopes](https://github.com/nullplatform/scopes), Kubernetes scope): the scopes of an app in an environment then run as the Kubernetes service account `np-<application id>-<environment>`, in the app's namespace. The link grants the role to `principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<project id>.svc.id.goog/subject/ns/<namespace>/sa/np-<application id>-<environment>`.
 
-- **Environment:** the value of the link's `environment` dimension, or, for a link to a scope, of that scope's `environment` dimension. A link with neither fails: links without an environment dimension are not supported in this version.
+- **Environment:** the value of the identity dimension, `environment` unless `identity_dimension` says otherwise, from the link's dimensions or, for a link to a scope, from that scope's. A link without it fails: links without that dimension are not supported in this version. `identity_dimension` **has to be the same dimension the scopes' IAM (`IAM.MODE: gke`) names the service account by**, or the binding goes to a service account no scope runs as.
 - **Name:** `<environment>` is the dimension value in lowercase, which must then be a DNS-1123 label (`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`); otherwise the link fails, as it does when `np-<application id>-<environment>` exceeds 63 characters. Nothing is rewritten or truncated, so two environments never share a name. `scripts/build_context` documents the exact rule, which the scopes apply too.
-- **Namespace:** `values.yaml` `app_k8s_namespace`, set to the scopes' `cluster.namespace`; `nullplatform` by default (the Containers scope's default). A value without `{` is used as is. A pattern, such as `{.namespace.slug}`, `{.account.slug}-{.namespace.slug}` or `{.namespace.slug}-{.scope.dimensions.environment}`, is rendered per link by the scopes' own engine (`scripts/render_k8s_namespace`, ported from nullplatform/scopes `k8s/naming/resolve_names`), against the app, its namespace and account (read from the API) and the link's dimensions, or the linked scope. A placeholder with no value at link time, such as `{.scope.slug}` on a link to dimensions, fails the link and names the placeholder. The result must be a DNS-1123 label, never `default` or `kube-*`. Not mirrored: a scope keeps the namespace it already runs in when the pattern changes later, so change the pattern only before the scopes exist.
+- **Namespace:** `app_k8s_namespace` (`values.yaml` or `GCS_APP_K8S_NAMESPACE`), set to the scopes' `cluster.namespace`; `nullplatform` by default (the Containers scope's default). A value without `{` is used as is. A pattern, such as `{.namespace.slug}`, `{.account.slug}-{.namespace.slug}` or `{.namespace.slug}-{.scope.dimensions.environment}`, is rendered per link by the scopes' own engine (`scripts/render_k8s_namespace`, ported from nullplatform/scopes `k8s/naming/resolve_names`), against the app, its namespace and account (read from the API) and the link's dimensions, or the linked scope. A placeholder with no value at link time, such as `{.scope.slug}` on a link to dimensions, fails the link and names the placeholder. The result must be a DNS-1123 label, never `default` or `kube-*`. Not mirrored: a scope keeps the namespace it already runs in when the pattern changes later, so change the pattern only before the scopes exist.
 - **Every scope of the app in that environment** gets access, including scopes created after the link: no `link-update` needed. The binding works before the service account exists (GCP accepts it) and takes effect when the scopes run with it.
 - **`link-update`** reapplies the access level. **Unlink** revokes the binding from the link's own state (`gcs-bucket/<service_id>/links/<link_id>`).
 - **Deleting the service:** the platform requires removing its links first, so the unlinks revoke the bindings. A binding left over by a link that survives anyway belongs to the bucket's IAM policy and is deleted with the bucket; a later unlink then has nothing to revoke.
@@ -24,6 +24,28 @@ Linked apps get access as their own identity, one per application and environmen
 
 ## Install
 - `specs/requirements/gcp`: roles for the agent's Kubernetes service account (Workload Identity): `storage.admin` limited to `np-gcs-*` buckets (keep the tfstate bucket outside that prefix), plus a custom role to create and list buckets; no service account roles (the link grants on the bucket, which `storage.admin` on `np-gcs-*` covers). Object access on the tfstate bucket only under `gcs-bucket/`, unless another install already grants it (`grant_tfstate_access = false`; then that grant applies, as the worker shares the agent's identity).
+- Link settings: `app_k8s_namespace` and `identity_dimension` resolve from `values.yaml`, then the worker environment (`GCS_APP_K8S_NAMESPACE`, `GCS_IDENTITY_DIMENSION`), then the defaults (`nullplatform`, `environment`). To set them only in your IaC, pass them in the [`nullplatform/agent`](https://github.com/nullplatform/tofu-modules/tree/main/nullplatform/agent) module's `extra_envs`, and mount the agent's secret into this package's worker (the module hands its environment only to the `containers` worker):
+
+  ```hcl
+  extra_envs = {
+    GCS_APP_K8S_NAMESPACE  = "{.namespace.slug}-{.scope.dimensions.environment}" # the scopes' cluster.namespace
+    GCS_IDENTITY_DIMENSION = "environment"                                       # the scopes' IAM dimension
+  }
+
+  worker = {
+    patches = [{
+      target = { package = "gcp-cloud-storage-bucket" }
+      merge = {
+        spec = {
+          containers = [{
+            name    = "worker"
+            envFrom = [{ secretRef = { name = "<agent-secret>" } }]
+          }]
+        }
+      }
+    }]
+  }
+  ```
 - Worker image: `Dockerfile` (`NP_PACKAGE_NAME=gcp-cloud-storage-bucket`), with `tofu`.
 - Published as the package `np-gcp-cloud-storage-bucket` (specification "GCP Cloud Storage Bucket") by `gcs-bucket/publish` on every release; install it with tofu-modules `nullplatform/service_package_installation`.
 

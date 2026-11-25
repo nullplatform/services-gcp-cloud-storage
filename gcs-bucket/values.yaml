@@ -17,6 +17,9 @@ project_id: ""
 location: ""
 tfstate_bucket: ""
 
+# app_k8s_namespace and identity_dimension: this file, then the worker
+# environment ($GCS_APP_K8S_NAMESPACE, $GCS_IDENTITY_DIMENSION), then the default.
+#
 # Link only. app_k8s_namespace: the Kubernetes namespace the linked apps' scopes
 # run in, where the scopes (IAM.MODE gke) create np-<application id>-<environment>.
 # Set it to the scopes' cluster.namespace: a fixed name, or the same pattern,
@@ -24,3 +27,9 @@ tfstate_bucket: ""
 # rendered per link as the scopes render it. Empty means "nullplatform", the
 # Containers scope's default.
 app_k8s_namespace: ""
+
+# Link only. identity_dimension: the dimension whose value names the app's
+# identity, np-<application id>-<value>. It has to be the same dimension the
+# scopes' IAM (IAM.MODE gke) names the service account by. Empty means
+# "environment".
+identity_dimension: ""
