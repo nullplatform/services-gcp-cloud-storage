@@ -1,9 +1,10 @@
-# The link grants a role on this bucket to the Kubernetes service account of
-# each scope of the linked app, through Workload Identity: no Google service
-# account and no key. The app's Google client libraries pick the identity up on
-# their own. The scopes create those service accounts (<prefix>-<scope id>,
-# labeled scope_id) when they run with IAM.MODE gke, so only the linked app
-# reaches the bucket. build_permissions_context finds them.
+# The link grants a role on this bucket to the linked app's Kubernetes service
+# account in the link's environment, np-<application id>-<environment>, through
+# Workload Identity: no Google service account and no key. The app's Google
+# client libraries pick the identity up on their own. The scopes create that
+# service account when they run with IAM.MODE gke, and every scope of the app in
+# that environment runs as it. The binding may precede it: GCP accepts a
+# principal that does not exist yet, and access starts when the scopes use it.
 
 data "google_storage_bucket" "this" {
   name = var.bucket_name

@@ -1,5 +1,5 @@
-# Revokes the role from every scope's service account, from the link's own
-# state: the app loses access at once. The bucket and its objects are untouched.
+# Revokes the role from the app's per-environment service account, from the
+# link's own state: the app loses access at once. The bucket and its objects are untouched.
 include:
   - "$SERVICE_PATH/workflows/link.yaml"
 

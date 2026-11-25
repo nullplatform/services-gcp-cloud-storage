@@ -195,13 +195,67 @@ if [ "${ACTION_SOURCE:-}" = "link" ]; then
     exit 1
   fi
 
-  # Namespaces the apps run in besides "nullplatform" and those labeled
-  # nullplatform=true (see resolve_workload_identities).
-  APP_K8S_NAMESPACES=$(yaml_value "app_k8s_namespaces" "$VALUES")
-  if [[ ! "$APP_K8S_NAMESPACES" =~ ^[a-z0-9,\ -]*$ ]]; then
-    echo "ERROR: invalid app_k8s_namespaces '${APP_K8S_NAMESPACES}' (comma-separated namespace names)" >&2
+  # Who gets the role: the Kubernetes service account the scopes create for
+  # this app and environment when they run with IAM.MODE gke (nullplatform/scopes),
+  # np-<application id>-<environment>, in the namespace the app's scopes run in.
+  # The name is derived, not looked up: the binding can exist before the service
+  # account does, and every scope of the app in that environment shares it.
+  APP_K8S_NAMESPACE=$(yaml_value "app_k8s_namespace" "$VALUES")
+  APP_K8S_NAMESPACE="${APP_K8S_NAMESPACE:-nullplatform}"
+  if [[ ! "$APP_K8S_NAMESPACE" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] \
+     || [ "$APP_K8S_NAMESPACE" = "default" ] || [[ "$APP_K8S_NAMESPACE" == kube-* ]]; then
+    echo "ERROR: invalid app_k8s_namespace '${APP_K8S_NAMESPACE}' (a Kubernetes namespace name, never default or kube-*)" >&2
     exit 1
   fi
 
-  export LINK_ID APPLICATION_ID LINK_ACCESS_LEVEL APP_K8S_NAMESPACES
+  LINK_ENVIRONMENT=""
+  APP_K8S_SERVICE_ACCOUNT=""
+  if [ "$(echo "$CONTEXT" | jq -r '.type // ""')" != "delete" ]; then
+    # The environment: the link's own dimensions (a link to dimensions), else the
+    # dimensions of the scope it is linked to, from the notification or, when the
+    # notification carries only the scope id, from the API. An unlink needs none:
+    # destroy revokes what the link's state holds.
+    LINK_SCOPE_ID=$(echo "$CONTEXT" | jq -r '.link.scope.id // "" | tostring')
+    LINK_ENVIRONMENT=$(echo "$CONTEXT" | jq -r '.link.dimensions.environment // .link.scope.dimensions.environment // ""')
+    if [ -z "$LINK_ENVIRONMENT" ] && [ -n "$LINK_SCOPE_ID" ]; then
+      if [[ ! "$LINK_SCOPE_ID" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: invalid .link.scope.id '${LINK_SCOPE_ID}'" >&2
+        exit 1
+      fi
+      if ! SCOPE_OUT=$(np scope read --id "$LINK_SCOPE_ID" --format json 2>&1); then
+        echo "ERROR: could not read scope ${LINK_SCOPE_ID} of link ${LINK_ID}: ${SCOPE_OUT}" >&2
+        exit 1
+      fi
+      LINK_ENVIRONMENT=$(printf '%s' "$SCOPE_OUT" | jq -r '.dimensions.environment // ""' 2>/dev/null) || LINK_ENVIRONMENT=""
+    fi
+    if [ -z "$LINK_ENVIRONMENT" ]; then
+      echo "ERROR: link ${LINK_ID} has no environment: link the service to an environment dimension, or to a scope that has one." >&2
+      echo "       The bucket is granted to the app's identity in one environment (np-<application id>-<environment>);" >&2
+      echo "       a link without an environment dimension is not supported in this version." >&2
+      exit 1
+    fi
+
+    # Kubernetes service account name; nullplatform/scopes (IAM.MODE gke) derives
+    # the same name with the same rule, so keep both in step:
+    #   1. environment = the value of the environment dimension, ASCII lowercased;
+    #   2. every character outside [a-z0-9-] becomes "-";
+    #   3. runs of "-" collapse into one, and leading/trailing "-" are dropped;
+    #   4. name = "np-<application id>-<environment>"; when it exceeds 63
+    #      characters (DNS-1123 label), the environment is cut to the
+    #      63 - length("np-<application id>-") characters that fit, and a
+    #      trailing "-" left by the cut is dropped.
+    _env=$(printf '%s' "$LINK_ENVIRONMENT" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -c 'a-z0-9-' '-' | tr -s '-' | sed 's/^-*//; s/-*$//')
+    _prefix="np-${APPLICATION_ID}-"
+    _room=$(( 63 - ${#_prefix} ))
+    _env="${_env:0:$_room}"
+    _env="${_env%-}"
+    if [ -z "$_env" ]; then
+      echo "ERROR: environment '${LINK_ENVIRONMENT}' of link ${LINK_ID} leaves no valid Kubernetes name" >&2
+      exit 1
+    fi
+    APP_K8S_SERVICE_ACCOUNT="${_prefix}${_env}"
+    echo "Link ${LINK_ID}: application ${APPLICATION_ID}, environment '${LINK_ENVIRONMENT}' -> ${APP_K8S_NAMESPACE}/${APP_K8S_SERVICE_ACCOUNT}"
+  fi
+
+  export LINK_ID APPLICATION_ID LINK_ACCESS_LEVEL LINK_ENVIRONMENT APP_K8S_NAMESPACE APP_K8S_SERVICE_ACCOUNT
 fi

@@ -1,7 +1,8 @@
-# Grants the link's access level on the bucket to the Kubernetes service account
-# of each scope of the linked app (Workload Identity), then writes who got which
-# role to the link. No credential: the app's Google client libraries use the
-# scope's identity, and the bucket name comes from the service (GCS_BUCKET_NAME).
+# Grants the link's access level on the bucket to the linked app's Kubernetes
+# service account in the link's environment, np-<application id>-<environment>
+# (Workload Identity), then writes who got which role to the link. No
+# credential: the app's Google client libraries use that identity, and the
+# bucket name comes from the service (GCS_BUCKET_NAME).
 provider_categories:
   - cloud-providers
 
@@ -36,7 +37,11 @@ steps:
         type: environment
       - name: LINK_ACCESS_LEVEL
         type: environment
-      - name: APP_K8S_NAMESPACES
+      - name: LINK_ENVIRONMENT
+        type: environment
+      - name: APP_K8S_NAMESPACE
+        type: environment
+      - name: APP_K8S_SERVICE_ACCOUNT
         type: environment
 
   - name: build permissions context

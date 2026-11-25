@@ -22,5 +22,5 @@ variable "workload_identities" {
     service_account = string
   }))
   default     = []
-  description = "Kubernetes service accounts of the linked app's scopes (one per scope, IAM.MODE gke). Empty on unlink: destroy works from the state."
+  description = "Kubernetes service account of the linked app in the link's environment (np-<application id>-<environment>, created by the scopes with IAM.MODE gke). Empty on unlink: destroy works from the state."
 }

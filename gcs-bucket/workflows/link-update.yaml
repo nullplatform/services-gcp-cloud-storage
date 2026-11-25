@@ -1,5 +1,4 @@
-# Reapplies the link: a new access level replaces the role, and the scopes the
-# app has now are looked up again, so scopes created after the link get the
-# role and deleted ones lose it. Update the link after adding a scope.
+# Reapplies the link: a new access level replaces the role. Scopes created after
+# the link need no update: they run as the same per-environment identity.
 include:
   - "$SERVICE_PATH/workflows/link.yaml"

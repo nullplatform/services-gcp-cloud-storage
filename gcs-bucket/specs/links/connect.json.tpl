@@ -21,7 +21,7 @@
           "title": "Access Level",
           "default": "read-write",
           "enum": ["read", "write", "read-write"],
-          "description": "read lists and reads objects (roles/storage.objectViewer); write only creates them (roles/storage.objectCreator); read-write also overwrites and deletes them (roles/storage.objectUser). Granted on this bucket only, to the Kubernetes service account of each scope of the app (Workload Identity; the scopes need IAM.MODE gke).",
+          "description": "read lists and reads objects (roles/storage.objectViewer); write only creates them (roles/storage.objectCreator); read-write also overwrites and deletes them (roles/storage.objectUser). Granted on this bucket only, to the app's Kubernetes service account in the link's environment, np-<application id>-<environment> (Workload Identity; the scopes need IAM.MODE gke). Every scope of the app in that environment gets it, including scopes created later.",
           "editableOn": ["create", "update"],
           "order": 1
         },
@@ -31,7 +31,7 @@
           "title": "Granted To",
           "visibleOn": ["read"],
           "editableOn": [],
-          "description": "Workload Identity principals that got the role, one per scope (auto-populated; updating the link picks up scopes created after it)",
+          "description": "Workload Identity principal that got the role: the app's service account in the link's environment (auto-populated)",
           "order": 2
         },
         "role": {

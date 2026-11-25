@@ -3,26 +3,25 @@
 A private Cloud Storage bucket per service, and access to it per app through a link.
 
 - **Service** (`create`, `update`, `delete`): a bucket with uniform bucket-level access and public access prevention enforced. The name is derived once from the service name and id and then pinned. A delete fails while the bucket holds objects, unless `force_destroy` is on.
-- **Link** `connect` (`link`, `link-update`, `unlink`): grants a role on this bucket only to the Kubernetes service account of each scope of the linked app, through Workload Identity. `access_level`: `read` (`roles/storage.objectViewer`), `write` (`roles/storage.objectCreator`) or `read-write` (`roles/storage.objectUser`, the default). The app gets the bucket name from the service (`GCS_BUCKET_NAME`, `GCS_PROJECT_ID`); the link exports nothing and creates no key.
+- **Link** `connect` (`link`, `link-update`, `unlink`): grants a role on this bucket only to the linked app's Kubernetes service account in the link's environment, through Workload Identity. `access_level`: `read` (`roles/storage.objectViewer`), `write` (`roles/storage.objectCreator`) or `read-write` (`roles/storage.objectUser`, the default). The app gets the bucket name from the service (`GCS_BUCKET_NAME`, `GCS_PROJECT_ID`); the link exports nothing and creates no key.
 
 ## Identity model
 The worker runs as the agent's Kubernetes service account through Workload Identity, with no keys.
 
-Linked apps get access as their own scopes, so only the linked app reaches the bucket. This **requires the scopes to run with `IAM.ENABLED: true` and `IAM.MODE: gke`** ([nullplatform/scopes](https://github.com/nullplatform/scopes), Kubernetes scope): each scope then runs as its own Kubernetes service account, `<IAM.PREFIX>-<scope id>`, labeled `nullplatform=true` and `scope_id=<scope id>`, in the scope's namespace. The link grants the role to `principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<project id>.svc.id.goog/subject/ns/<namespace>/sa/<service account>` for each of them.
+Linked apps get access as their own identity, one per application and environment, so only the linked app reaches the bucket. This **requires the scopes to run with `IAM.ENABLED: true` and `IAM.MODE: gke`** ([nullplatform/scopes](https://github.com/nullplatform/scopes), Kubernetes scope): the scopes of an app in an environment then run as the Kubernetes service account `np-<application id>-<environment>`, in the app's namespace. The link grants the role to `principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<project id>.svc.id.goog/subject/ns/<namespace>/sa/np-<application id>-<environment>`.
 
-How the link finds them (`scripts/resolve_workload_identities`): it lists the app's scopes (`np scope list`), then the service accounts labeled `nullplatform=true` across the cluster (`kubectl`), and keeps, per scope, the one labeled with its `scope_id` whose name ends in `-<scope id>`, in a trusted namespace: `nullplatform`, one labeled `nullplatform=true`, or one listed in `values.yaml` `app_k8s_namespaces` (never `default` or `kube-*`). Looking them up, rather than rebuilding the name, follows `IAM.PREFIX` and namespace patterns the scopes render, without asking AWS or copying the scopes' configuration here.
-
-- **Without `IAM.MODE: gke`** no scope has its own service account, and the link fails with an error that says so. A scope that has none yet (still being created) gets no access, with a warning, while the other scopes do.
-- **Scopes created after the link:** update the link (`link-update` looks the scopes up again and reapplies, which also revokes deleted scopes).
-- **Unlink** revokes every binding from the link's own state (`gcs-bucket/<service_id>/links/<link_id>`), without looking at the cluster.
+- **Environment:** the value of the link's `environment` dimension, or, for a link to a scope, of that scope's `environment` dimension. A link with neither fails: links without an environment dimension are not supported in this version.
+- **Name:** `<environment>` is the dimension value made a DNS-1123 label (ASCII lowercase; any other character becomes `-`; repeated `-` collapse; no `-` at either end), cut so the whole name fits in 63 characters. `scripts/build_context` documents the exact rule, which the scopes apply too.
+- **Namespace:** `values.yaml` `app_k8s_namespace`, `nullplatform` by default (the Containers scope's default). It is one namespace for every app of the install.
+- **Every scope of the app in that environment** gets access, including scopes created after the link: no `link-update` needed. The binding works before the service account exists (GCP accepts it) and takes effect when the scopes run with it.
+- **`link-update`** reapplies the access level. **Unlink** revokes the binding from the link's own state (`gcs-bucket/<service_id>/links/<link_id>`).
 - The cluster's Workload Identity pool must be the bucket's project (`<project id>.svc.id.goog`).
 
-**Workload Identity sameness:** the grant goes to `ns/<namespace>/sa/<service account>` in the project's pool (`<project>.svc.id.goog`), which every GKE cluster with Workload Identity in that project shares. A pod with the same namespace and service account name in another cluster of the project gets the same access. Keep one cluster per project, or one trusted set of clusters, when you use this link.
+**Workload Identity sameness:** the grant goes to `ns/<namespace>/sa/np-<application id>-<environment>` in the project's pool (`<project>.svc.id.goog`), which every GKE cluster with Workload Identity in that project shares. A pod with the same namespace and service account name in another cluster of the project gets the same access. Keep one cluster per project, or one trusted set of clusters, when you use this link.
 
 ## Install
 - `specs/requirements/gcp`: roles for the agent's Kubernetes service account (Workload Identity): `storage.admin` limited to `np-gcs-*` buckets (keep the tfstate bucket outside that prefix), plus a custom role to create and list buckets; no service account roles (the link grants on the bucket, which `storage.admin` on `np-gcs-*` covers). Object access on the tfstate bucket only under `gcs-bucket/`, unless another install already grants it (`grant_tfstate_access = false`; then that grant applies, as the worker shares the agent's identity).
-- Kubernetes, for the link: the agent's Kubernetes service account needs cluster-wide `list` on `serviceaccounts` and `namespaces`.
-- Worker image: `Dockerfile` (`NP_PACKAGE_NAME=gcp-cloud-storage-bucket`), with `tofu` and `kubectl`.
+- Worker image: `Dockerfile` (`NP_PACKAGE_NAME=gcp-cloud-storage-bucket`), with `tofu`.
 - Published as the package `np-gcp-cloud-storage-bucket` (specification "GCP Cloud Storage Bucket") by `gcs-bucket/publish` on every release; install it with tofu-modules `nullplatform/service_package_installation`.
 
 ## Placement
