@@ -236,21 +236,22 @@ if [ "${ACTION_SOURCE:-}" = "link" ]; then
     fi
 
     # Kubernetes service account name; nullplatform/scopes (IAM.MODE gke) derives
-    # the same name with the same rule, so keep both in step:
+    # the same name with the same rule, so keep both in step. The rule is
+    # injective (two environments never share a name), so nothing is rewritten:
     #   1. environment = the value of the environment dimension, ASCII lowercased;
-    #   2. every character outside [a-z0-9-] becomes "-";
-    #   3. runs of "-" collapse into one, and leading/trailing "-" are dropped;
-    #   4. name = "np-<application id>-<environment>"; when it exceeds 63
-    #      characters (DNS-1123 label), the environment is cut to the
-    #      63 - length("np-<application id>-") characters that fit, and a
-    #      trailing "-" left by the cut is dropped.
-    _env=$(printf '%s' "$LINK_ENVIRONMENT" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -c 'a-z0-9-' '-' | tr -s '-' | sed 's/^-*//; s/-*$//')
+    #   2. it must then be a DNS-1123 label, ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$,
+    #      or the link fails;
+    #   3. name = "np-<application id>-<environment>"; over 63 characters, the
+    #      link fails (never truncated).
+    _env=$(printf '%s' "$LINK_ENVIRONMENT" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+    if [[ ! "$_env" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+      echo "ERROR: environment '${LINK_ENVIRONMENT}' of link ${LINK_ID} is not a valid Kubernetes name once lowercased" >&2
+      echo "       (letters, digits and '-', starting and ending with a letter or digit)" >&2
+      exit 1
+    fi
     _prefix="np-${APPLICATION_ID}-"
-    _room=$(( 63 - ${#_prefix} ))
-    _env="${_env:0:$_room}"
-    _env="${_env%-}"
-    if [ -z "$_env" ]; then
-      echo "ERROR: environment '${LINK_ENVIRONMENT}' of link ${LINK_ID} leaves no valid Kubernetes name" >&2
+    if [ $(( ${#_prefix} + ${#_env} )) -gt 63 ]; then
+      echo "ERROR: service account name '${_prefix}${_env}' of link ${LINK_ID} exceeds 63 characters" >&2
       exit 1
     fi
     APP_K8S_SERVICE_ACCOUNT="${_prefix}${_env}"
