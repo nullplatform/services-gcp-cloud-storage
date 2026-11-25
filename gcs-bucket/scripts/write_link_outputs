@@ -1,0 +1,28 @@
+#!/bin/bash
+set -euo pipefail
+
+# Writes who got which role on the bucket to the link. No credential exists:
+# the app reaches the bucket through Workload Identity, and the bucket name is
+# already exported by the service (GCS_BUCKET_NAME), so the link exports nothing.
+
+if [ "${NP_SKIP_TOFU:-false}" = "true" ]; then
+  echo "NP_SKIP_TOFU=true: no link attributes to write."
+  exit 0
+fi
+
+cd "$OUTPUT_DIR"
+LINK_ID_VAL=$(echo "$CONTEXT" | jq -r '.link.id')
+
+if ! OUT=$(tofu output -json 2>&1); then
+  echo "ERROR: 'tofu output -json' failed; link attributes NOT patched" >&2
+  exit 1
+fi
+
+ATTRS=$(printf '%s' "$OUT" | jq -c '{granted_to: (.granted_to.value // []), role: .role.value}')
+if [ "$(echo "$ATTRS" | jq '.granted_to | length')" -eq 0 ]; then
+  echo "ERROR: no granted_to output; link attributes NOT patched" >&2
+  exit 1
+fi
+
+echo "Updating link ${LINK_ID_VAL}: $(echo "$ATTRS" | jq -c .)"
+np link patch --id "$LINK_ID_VAL" --body "{\"attributes\": $ATTRS}"

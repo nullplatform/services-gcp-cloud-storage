@@ -1,0 +1,83 @@
+#!/bin/bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# build_permissions_context: switches the link workflows from the bucket
+# module to the permissions module (the bucket role for each scope's
+# Kubernetes service account), with a state key of its own so a link never
+# touches the bucket's state.
+# ---------------------------------------------------------------------------
+
+ACTION_TYPE=$(echo "$CONTEXT" | jq -r '.type // ""')
+
+TFSTATE_PREFIX="gcs-bucket/${SERVICE_ID}/links/${LINK_ID}"
+OUTPUT_DIR="/tmp/np-link-${LINK_ID}"
+TOFU_MODULE_DIR="$SERVICE_PATH/permissions"
+
+# The bucket comes from THIS service's own deployment state, never from the
+# service attributes: those can be written through the API, and a forged name
+# would grant access to someone else's bucket (the tfstate bucket included).
+# A state that cannot be read stops the action, on create and on delete alike.
+STATE_DIR=$(mktemp -d)
+cp -r "$SERVICE_PATH/deployment"/* "$STATE_DIR/"
+cat > "$STATE_DIR/backend.hcl" <<EOT
+bucket = "${TFSTATE_BUCKET}"
+prefix = "gcs-bucket/${SERVICE_ID}/deployment"
+EOT
+if ! (cd "$STATE_DIR" && tofu init -input=false -backend-config=backend.hcl >/dev/null); then
+  rm -rf "$STATE_DIR"
+  echo "ERROR: could not read the bucket's state (gs://${TFSTATE_BUCKET}/gcs-bucket/${SERVICE_ID}/deployment)" >&2
+  exit 1
+fi
+# Only a successful read with no bucket_name means "no bucket"; any failure stops.
+if ! STATE_OUT=$(cd "$STATE_DIR" && tofu output -json 2>&1); then
+  rm -rf "$STATE_DIR"
+  echo "ERROR: could not read the bucket's state outputs: ${STATE_OUT}" >&2
+  exit 1
+fi
+rm -rf "$STATE_DIR"
+STATE_BUCKET=$(printf '%s' "$STATE_OUT" | jq -r '.bucket_name.value // ""')
+
+if [ -z "$STATE_BUCKET" ]; then
+  if [ "$ACTION_TYPE" = "delete" ]; then
+    # No bucket was ever created, so no role was ever granted on it.
+    echo "The service has no bucket in its state: nothing was granted, nothing to revoke."
+    NP_SKIP_TOFU=true
+    export NP_SKIP_TOFU TOFU_MODULE_DIR OUTPUT_DIR
+    exit 0
+  fi
+  echo "ERROR: the service has no bucket in its state yet; create the bucket before linking it" >&2
+  exit 1
+fi
+_sid=$(printf '%s' "$SERVICE_ID" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | cut -c1-8)
+if [[ "$STATE_BUCKET" != np-gcs-* ]] || [[ "$STATE_BUCKET" != *"-${_sid}" ]] || [ "$STATE_BUCKET" = "$TFSTATE_BUCKET" ]; then
+  echo "ERROR: refusing to act on '${STATE_BUCKET}'" >&2
+  exit 1
+fi
+
+# Who gets the role: the Kubernetes service account of each scope of the app.
+# An unlink needs nothing from the cluster: destroy revokes what the link's
+# state holds, even after the scopes are gone.
+if [ "$ACTION_TYPE" = "delete" ]; then
+  WORKLOAD_IDENTITIES='[]'
+  echo "Link ${LINK_ID}: revoking the role on gs://${STATE_BUCKET}"
+else
+  WORKLOAD_IDENTITIES=$("$SERVICE_PATH/scripts/resolve_workload_identities" "$APPLICATION_ID")
+  echo "Link ${LINK_ID}: ${LINK_ACCESS_LEVEL} on gs://${STATE_BUCKET} for $(echo "$WORKLOAD_IDENTITIES" | jq -r 'map("\(.namespace)/\(.service_account)") | join(", ")')"
+fi
+
+mkdir -p "$OUTPUT_DIR"
+cat > "${OUTPUT_DIR}/backend.hcl" <<EOT
+bucket = "${TFSTATE_BUCKET}"
+prefix = "${TFSTATE_PREFIX}"
+EOT
+TOFU_INIT_VARIABLES=""
+
+TOFU_VARIABLES=$(jq -nc \
+  --arg project_id "$PROJECT_ID" --arg bucket_name "$STATE_BUCKET" \
+  --arg access_level "$LINK_ACCESS_LEVEL" --argjson identities "$WORKLOAD_IDENTITIES" \
+  '{project_id: $project_id, bucket_name: $bucket_name, access_level: $access_level,
+    workload_identities: [$identities[] | {namespace, service_account}]}')
+
+NP_SKIP_TOFU=false
+export OUTPUT_DIR TOFU_MODULE_DIR TOFU_INIT_VARIABLES TOFU_VARIABLES NP_SKIP_TOFU

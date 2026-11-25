@@ -3,7 +3,8 @@ set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # build_context: turns the nullplatform notification into the OpenTofu inputs
-# for a bucket action.
+# for a bucket action, and on link actions also exports the LINK_* values that
+# build_permissions_context reads next.
 #
 # Creates nothing and calls no cloud CLI: it only derives names and paths. The
 # tfstate bucket must already exist (the install creates it).
@@ -165,3 +166,42 @@ TOFU_VARIABLES=$(jq -nc \
 
 export SERVICE_ID SERVICE_NAME BUCKET_NAME PROJECT_ID LOCATION TFSTATE_BUCKET TFSTATE_PREFIX
 export OUTPUT_DIR TOFU_MODULE_DIR TOFU_INIT_VARIABLES TOFU_VARIABLES
+
+# --- Link context (link workflows only) ------------------------------------
+
+if [ "${ACTION_SOURCE:-}" = "link" ]; then
+  LINK_ID=$(echo "$CONTEXT" | jq -r '.link.id // ""')
+  if [[ ! "$LINK_ID" =~ ^[A-Za-z0-9-]+$ ]]; then
+    echo "ERROR: invalid or missing .link.id '${LINK_ID}'" >&2
+    exit 1
+  fi
+
+  # The linking app, not the one that owns the service.
+  APPLICATION_ID=$(echo "$CONTEXT" | jq -r '
+    ((.link.entity.nrn // "") | capture("application=(?<id>[0-9]+)").id) //
+    ((.link.entity_nrn // "") | capture("application=(?<id>[0-9]+)").id) //
+    .tags.application_id //
+    ((.entity_nrn // "") | capture("application=(?<id>[0-9]+)").id) //
+    ""')
+  if [[ ! "$APPLICATION_ID" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: could not resolve the application of link ${LINK_ID}" >&2
+    exit 1
+  fi
+
+  LINK_ATTRS=$(echo "$CONTEXT" | jq -c '(.link.attributes // {}) * (.parameters // {})')
+  LINK_ACCESS_LEVEL=$(echo "$LINK_ATTRS" | jq -r '.access_level // "read-write"')
+  if [[ ! "$LINK_ACCESS_LEVEL" =~ ^(read|write|read-write)$ ]]; then
+    echo "ERROR: invalid access_level '${LINK_ACCESS_LEVEL}' (read, write or read-write)" >&2
+    exit 1
+  fi
+
+  # Namespaces the apps run in besides "nullplatform" and those labeled
+  # nullplatform=true (see resolve_workload_identities).
+  APP_K8S_NAMESPACES=$(yaml_value "app_k8s_namespaces" "$VALUES")
+  if [[ ! "$APP_K8S_NAMESPACES" =~ ^[a-z0-9,\ -]*$ ]]; then
+    echo "ERROR: invalid app_k8s_namespaces '${APP_K8S_NAMESPACES}' (comma-separated namespace names)" >&2
+    exit 1
+  fi
+
+  export LINK_ID APPLICATION_ID LINK_ACCESS_LEVEL APP_K8S_NAMESPACES
+fi

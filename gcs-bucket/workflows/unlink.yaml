@@ -1,0 +1,18 @@
+# Revokes the role from every scope's service account, from the link's own
+# state: the app loses access at once. The bucket and its objects are untouched.
+include:
+  - "$SERVICE_PATH/workflows/link.yaml"
+
+steps:
+  - name: tofu
+    type: script
+    file: $SERVICE_PATH/scripts/do_tofu
+    action: replace
+    configuration:
+      TOFU_ACTION: destroy
+  - name: write link outputs
+    type: script
+    file: $SERVICE_PATH/scripts/write_link_outputs
+    action: replace
+    configuration:
+      NP_SKIP_TOFU: "true"

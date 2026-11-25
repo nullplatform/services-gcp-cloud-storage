@@ -32,6 +32,10 @@ RUN set -eu; \
     rm -f /tmp/tofu.tar.gz; \
     tofu version
 
+# kubectl: the link looks up each scope's Kubernetes service account in the
+# cluster (scripts/resolve_workload_identities).
+RUN apk add --no-cache kubectl
+
 # --chown: np chmods the action script in place, so the tree must belong to the runtime uid.
 COPY --chown=10001:10001 . /app/pkg
 ENV NP_PACKAGE_NAME=gcp-cloud-storage-bucket \

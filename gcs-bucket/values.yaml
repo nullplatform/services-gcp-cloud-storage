@@ -17,3 +17,7 @@ project_id: ""
 location: ""
 tfstate_bucket: ""
 
+# Link only. app_k8s_namespaces: comma-separated Kubernetes namespaces the linked
+# apps run in, when they are neither "nullplatform" nor labeled nullplatform=true.
+# A scope's service account is trusted only in one of those namespaces.
+app_k8s_namespaces: ""

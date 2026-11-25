@@ -5,7 +5,7 @@
   "unique": false,
   "assignable_to": "any",
   "use_default_actions": true,
-  "available_links": [],
+  "available_links": ["connect"],
   "selectors": {
     "category": "Storage",
     "imported": false,

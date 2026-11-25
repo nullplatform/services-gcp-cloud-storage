@@ -40,5 +40,5 @@ module "publish" {
   service_path     = "gcs-bucket"
   image_repository = "nullplatform/agent-plugins/services/gcp-cloud-storage"
   local_specs_path = abspath("${path.module}/..")
-  available_links  = []
+  available_links  = ["connect"]
 }
