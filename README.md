@@ -17,6 +17,8 @@ How the link finds them (`scripts/resolve_workload_identities`): it lists the ap
 - **Unlink** revokes every binding from the link's own state (`gcs-bucket/<service_id>/links/<link_id>`), without looking at the cluster.
 - The cluster's Workload Identity pool must be the bucket's project (`<project id>.svc.id.goog`).
 
+**Workload Identity sameness:** the grant goes to `ns/<namespace>/sa/<service account>` in the project's pool (`<project>.svc.id.goog`), which every GKE cluster with Workload Identity in that project shares. A pod with the same namespace and service account name in another cluster of the project gets the same access. Keep one cluster per project, or one trusted set of clusters, when you use this link.
+
 ## Install
 - `specs/requirements/gcp`: roles for the agent's Kubernetes service account (Workload Identity): `storage.admin` limited to `np-gcs-*` buckets (keep the tfstate bucket outside that prefix), plus a custom role to create and list buckets; no service account roles (the link grants on the bucket, which `storage.admin` on `np-gcs-*` covers). Object access on the tfstate bucket only under `gcs-bucket/`, unless another install already grants it (`grant_tfstate_access = false`; then that grant applies, as the worker shares the agent's identity).
 - Kubernetes, for the link: the agent's Kubernetes service account needs cluster-wide `list` on `serviceaccounts` and `namespaces`.
