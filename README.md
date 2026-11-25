@@ -1,6 +1,6 @@
 # GCP Cloud Storage Bucket (nullplatform service)
 
-A private Cloud Storage bucket per service, and access to it per link.
+A private Cloud Storage bucket per service. Access per app (a link) comes in v0.2.0.
 
 - **Service** (`create`, `update`, `delete`): a bucket with uniform bucket-level access and public access prevention enforced. The name is derived once from the service name and id and then pinned. A delete fails while the bucket holds objects, unless `force_destroy` is on.
 - **Link:** not in v0.1.0. Access per app (a Kubernetes service account per scope, through Workload Identity) comes in v0.2.0.
@@ -9,7 +9,7 @@ A private Cloud Storage bucket per service, and access to it per link.
 The worker runs as the agent's Kubernetes service account through Workload Identity, with no keys. v0.1.0 has no link, so no app gets access to the bucket through the platform yet.
 
 ## Install
-- `specs/requirements/gcp`: roles for the agent's Kubernetes service account (Workload Identity): `storage.admin` limited to `np-*` buckets, plus a custom role to create and list buckets; no service account roles. Object access on the tfstate bucket, unless another install already grants it (`grant_tfstate_access = false`).
+- `specs/requirements/gcp`: roles for the agent's Kubernetes service account (Workload Identity): `storage.admin` limited to `np-gcs-*` buckets (keep the tfstate bucket outside that prefix), plus a custom role to create and list buckets; no service account roles. Object access on the tfstate bucket only under `gcs-bucket/`, unless another install already grants it (`grant_tfstate_access = false`; then that grant applies, as the worker shares the agent's identity).
 - Worker image: `Dockerfile` (`NP_PACKAGE_NAME=gcp-cloud-storage-bucket`).
 - Published as the package `np-gcp-cloud-storage-bucket` (specification "GCP Cloud Storage Bucket") by `gcs-bucket/publish` on every release; install it with tofu-modules `nullplatform/service_package_installation`.
 
@@ -94,11 +94,13 @@ Beta images live in a separate repository that the beta role can write and the p
 
 ## Publishing
 
-After adding the **Public ECR** service to the application, set in this repository:
+Set in this repository:
 
 | Name | Kind | Value |
 |---|---|---|
-| `AWS_ROLE_ARN_ECR_PUSH` | secret | the publisher role ARN the Public ECR service returns |
+| `AWS_ROLE_ARN_ECR_PUSH` | secret | the publisher role ARN for `agent-plugins/services/gcp-cloud-storage`, created by the agent-plugins registration |
 | `NP_ARTIFACT_NRN` | variable | the NRN of the organization that owns the artifacts |
+| `PACKAGE_STATE_AWS_ACCOUNT_ID`, `PACKAGE_TFSTATE_BUCKET`, `PACKAGE_TFSTATE_REGION` | organization secrets | where the publish stack keeps its state; the state role is `github-actions-<repository>-package-state` in that account, by convention |
 
-`ARTIFACT_NP_API_KEY` comes from the organization. The release checks all three before building and fails with a clear error if one is missing. Beta images assume the role in the organization secret `AWS_BETA_ROLE_ARN` (no role is written in the workflow) and push to the image's `beta/` repository in ECR Public, which the dispatcher creates together with the production one. In this template repository neither workflow runs.
+`ARTIFACT_NP_API_KEY` comes from the organization. Each release publishes the
+package `np-gcp-cloud-storage-bucket` from `gcs-bucket/publish`.

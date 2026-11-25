@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Writes the bucket's name, URL, project and location back to the service, so
-# every linked app gets GCS_BUCKET_NAME and the stable name survives updates.
+# the stable name survives updates (and linked apps get GCS_BUCKET_NAME once links exist).
 
 cd "$OUTPUT_DIR"
 SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id')

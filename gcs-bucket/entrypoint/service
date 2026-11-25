@@ -4,6 +4,10 @@ set -euo pipefail
 
 action="$SERVICE_ACTION_TYPE"
 [ "$SERVICE_ACTION_TYPE" = "custom" ] && action="$SERVICE_ACTION"
+if [[ ! "$action" =~ ^[a-z0-9-]+$ ]]; then
+  echo "ERROR: invalid action '$action'" >&2
+  exit 1
+fi
 
 echo "Executing service action=$SERVICE_ACTION type=$SERVICE_ACTION_TYPE"
 np service workflow exec --workflow "$SERVICE_PATH/workflows/$action.yaml" --values "$SERVICE_PATH/values.yaml"

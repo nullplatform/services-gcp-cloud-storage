@@ -3,8 +3,7 @@ set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # build_context: turns the nullplatform notification into the OpenTofu inputs
-# for a bucket action, and on link actions also exports the LINK_* values that
-# build_permissions_context reads next.
+# for a bucket action.
 #
 # Creates nothing and calls no cloud CLI: it only derives names and paths. The
 # tfstate bucket must already exist (the install creates it).
@@ -51,17 +50,18 @@ STORED_ATTRS=$(echo "$CONTEXT" | jq -c '.service.attributes // {}')
 # A bucket name is global and immutable: a new name means a new, empty bucket.
 # The stored name always wins; it is never taken from .parameters.
 STORED_BUCKET=$(echo "$STORED_ATTRS" | jq -r '.bucket_name // ""')
+_sid=$(printf '%s' "$SERVICE_ID" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | cut -c1-8)
 if [ -n "$STORED_BUCKET" ]; then
-  if [[ "$STORED_BUCKET" != np-* ]]; then
+  # Attributes can be written through the API: accept only a name this service
+  # issued for this service id, so a rewrite cannot point it at another bucket.
+  if [[ "$STORED_BUCKET" != np-gcs-* ]] || [[ "$STORED_BUCKET" != *"-${_sid}" ]]; then
     echo "ERROR: stored bucket_name '${STORED_BUCKET}' was not issued by this service" >&2
     exit 1
   fi
   BUCKET_NAME="$STORED_BUCKET"
 else
-  _slug=$(printf '%s' "$SERVICE_NAME" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | tr -s '-' | sed 's/^-//; s/-$//' | cut -c1-40)
-  _sid=$(printf '%s' "$SERVICE_ID" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | cut -c1-8)
-  BUCKET_NAME="np-${_slug:-bucket}-${_sid}"
-  BUCKET_NAME="${BUCKET_NAME%-}"
+  _slug=$(printf '%s' "$SERVICE_NAME" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | tr -s '-' | sed 's/^-//; s/-$//' | cut -c1-36 | sed 's/-$//')
+  BUCKET_NAME="np-gcs-${_slug:-bucket}-${_sid}"
 fi
 
 # GCS rules: 3-63 chars, lowercase letters, digits, "-" and "_", starting and
@@ -165,31 +165,3 @@ TOFU_VARIABLES=$(jq -nc \
 
 export SERVICE_ID SERVICE_NAME BUCKET_NAME PROJECT_ID LOCATION TFSTATE_BUCKET TFSTATE_PREFIX
 export OUTPUT_DIR TOFU_MODULE_DIR TOFU_INIT_VARIABLES TOFU_VARIABLES
-
-# --- Link context (link workflows only) ------------------------------------
-
-if [ "${ACTION_SOURCE:-}" = "link" ]; then
-  LINK_ID=$(echo "$CONTEXT" | jq -r '.link.id // ""')
-  if [[ ! "$LINK_ID" =~ ^[A-Za-z0-9-]+$ ]]; then
-    echo "ERROR: invalid or missing .link.id '${LINK_ID}'" >&2
-    exit 1
-  fi
-  APP_SLUG=$(echo "$CONTEXT" | jq -r '.link.entity.slug // .tags.application // ""')
-  LINK_ATTRS=$(echo "$CONTEXT" | jq -c '(.link.attributes // {}) * (.parameters // {})')
-  LINK_ACCESS_LEVEL=$(echo "$LINK_ATTRS" | jq -r '.access_level // "read-write"')
-  if [[ ! "$LINK_ACCESS_LEVEL" =~ ^(read|read-write)$ ]]; then
-    echo "ERROR: invalid access_level '${LINK_ACCESS_LEVEL}' (read or read-write)" >&2
-    exit 1
-  fi
-
-  # Identity the app runs as (Workload Identity): values.yaml, else the
-  # Containers scope default.
-  APP_K8S_NAMESPACE=$(yaml_value "app_k8s_namespace" "$VALUES"); APP_K8S_NAMESPACE="${APP_K8S_NAMESPACE:-nullplatform}"
-  APP_K8S_SERVICE_ACCOUNT=$(yaml_value "app_k8s_service_account" "$VALUES"); APP_K8S_SERVICE_ACCOUNT="${APP_K8S_SERVICE_ACCOUNT:-default}"
-  if [[ ! "$APP_K8S_NAMESPACE" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || [[ ! "$APP_K8S_SERVICE_ACCOUNT" =~ ^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$ ]]; then
-    echo "ERROR: invalid app_k8s_namespace or app_k8s_service_account" >&2
-    exit 1
-  fi
-
-  export LINK_ID APP_SLUG LINK_ACCESS_LEVEL APP_K8S_NAMESPACE APP_K8S_SERVICE_ACCOUNT
-fi
