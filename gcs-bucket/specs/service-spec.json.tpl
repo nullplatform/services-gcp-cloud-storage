@@ -40,7 +40,7 @@
         "versioning": {
           "type": "boolean",
           "title": "Object Versioning",
-          "default": false,
+          "default": true,
           "description": "Keep previous versions of overwritten or deleted objects.",
           "editableOn": ["create", "update"],
           "order": 2

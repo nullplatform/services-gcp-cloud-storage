@@ -1,0 +1,6 @@
+# Trivy misconfiguration suppressions for this repo (intentional, documented).
+
+# AVD-GCP-0066: buckets use Google-managed encryption. A customer-managed key
+# (Cloud KMS) is a product option with per-key cost and key management this
+# service does not own, as AVD-AWS-0132 in services-s-3. Flagged for product review.
+AVD-GCP-0066

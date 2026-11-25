@@ -72,7 +72,7 @@ if [[ ! "$BUCKET_NAME" =~ ^[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]$ ]] || [[ "$BUCKET_N
 fi
 
 STORAGE_CLASS=$(echo "$SERVICE_ATTRS" | jq -r '.storage_class // "STANDARD"')
-VERSIONING=$(echo "$SERVICE_ATTRS"    | jq -r '.versioning // false')
+VERSIONING=$(echo "$SERVICE_ATTRS"    | jq -r 'if has("versioning") then .versioning else true end')
 FORCE_DESTROY=$(echo "$SERVICE_ATTRS" | jq -r '.force_destroy // false')
 
 if [[ ! "$STORAGE_CLASS" =~ ^(STANDARD|NEARLINE|COLDLINE|ARCHIVE)$ ]]; then

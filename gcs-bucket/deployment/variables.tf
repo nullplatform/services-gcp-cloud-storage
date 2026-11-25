@@ -32,7 +32,7 @@ variable "storage_class" {
 
 variable "versioning" {
   type    = bool
-  default = false
+  default = true
 }
 
 variable "force_destroy" {
