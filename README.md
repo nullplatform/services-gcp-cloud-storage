@@ -15,6 +15,7 @@ Linked apps get access as their own identity, one per application and environmen
 - **Namespace:** `values.yaml` `app_k8s_namespace`, `nullplatform` by default (the Containers scope's default). It is one namespace for every app of the install.
 - **Every scope of the app in that environment** gets access, including scopes created after the link: no `link-update` needed. The binding works before the service account exists (GCP accepts it) and takes effect when the scopes run with it.
 - **`link-update`** reapplies the access level. **Unlink** revokes the binding from the link's own state (`gcs-bucket/<service_id>/links/<link_id>`).
+- **Deleting the service:** the platform requires removing its links first, so the unlinks revoke the bindings. A binding left over by a link that survives anyway belongs to the bucket's IAM policy and is deleted with the bucket; a later unlink then has nothing to revoke.
 - The cluster's Workload Identity pool must be the bucket's project (`<project id>.svc.id.goog`).
 
 **Workload Identity sameness:** the grant goes to `ns/<namespace>/sa/np-<application id>-<environment>` in the project's pool (`<project>.svc.id.goog`), which every GKE cluster with Workload Identity in that project shares. A pod with the same namespace and service account name in another cluster of the project gets the same access. Keep one cluster per project, or one trusted set of clusters, when you use this link.

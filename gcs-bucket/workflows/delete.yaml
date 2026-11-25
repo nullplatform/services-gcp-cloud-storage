@@ -1,5 +1,11 @@
 # Deletes the bucket. Fails while it still holds objects unless force_destroy is on: a delete never drops data silently. The tfstate objects stay behind.
 #
+# Links: the platform requires removing a service's links (archived ones too)
+# before deleting it, so each unlink has already revoked its binding. Should a
+# link survive anyway, its binding is part of the bucket's IAM policy and goes
+# with the bucket, and a later unlink finds no bucket in the state and revokes
+# nothing. No access outlives the bucket, so this workflow does not check links.
+#
 # No credential step: the worker runs as the agent's Kubernetes service account,
 # which Workload Identity maps to the GCP roles the install grants it.
 provider_categories:
