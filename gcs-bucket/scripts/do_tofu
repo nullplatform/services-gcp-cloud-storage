@@ -1,0 +1,36 @@
+#!/bin/bash
+set -euo pipefail
+
+# Runs `tofu init` + `tofu $TOFU_ACTION` on the module the previous step chose.
+# The worker image ships tofu; there is no runtime download.
+
+TOFU_ACTION="${TOFU_ACTION:-apply}"
+
+if [ "${NP_SKIP_TOFU:-false}" = "true" ]; then
+  echo "NP_SKIP_TOFU=true: nothing to do."
+  exit 0
+fi
+
+if ! command -v tofu >/dev/null 2>&1; then
+  echo "ERROR: tofu is not on PATH; the worker image must ship it" >&2
+  exit 1
+fi
+
+if [ -z "${OUTPUT_DIR:-}" ] || [ -z "${TOFU_MODULE_DIR:-}" ] || [ ! -d "$TOFU_MODULE_DIR" ]; then
+  echo "ERROR: OUTPUT_DIR or TOFU_MODULE_DIR is missing ('${TOFU_MODULE_DIR:-}')" >&2
+  exit 1
+fi
+if [ ! -f "${OUTPUT_DIR}/backend.hcl" ]; then
+  echo "ERROR: ${OUTPUT_DIR}/backend.hcl was not written by the context step" >&2
+  exit 1
+fi
+
+echo "tofu ${TOFU_ACTION} on $(basename "$TOFU_MODULE_DIR")"
+cd "$OUTPUT_DIR"
+cp -r "$TOFU_MODULE_DIR"/* .
+TFVARS_JSON="${TOFU_VARIABLES:-}"
+[ -z "$TFVARS_JSON" ] && TFVARS_JSON='{}'
+printf '%s' "$TFVARS_JSON" > terraform.tfvars.json
+
+tofu init -input=false -backend-config=backend.hcl
+tofu "$TOFU_ACTION" -input=false -auto-approve -var-file=terraform.tfvars.json

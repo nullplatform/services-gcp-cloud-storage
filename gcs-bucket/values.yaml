@@ -1,0 +1,35 @@
+# GCP Cloud Storage Bucket service: static configuration, not shown in the UI.
+#
+# Every key is optional and wins over the other two sources:
+#   1. this file
+#   2. the cloud-providers provider of the NRN (.project.id, .services.region,
+#      .services.tfstate.bucket)
+#   3. the worker environment ($SERVICES_GCP_PROJECT or $GOOGLE_CLOUD_PROJECT,
+#      $SERVICES_GCP_REGION, $SERVICES_TFSTATE_BUCKET)
+#
+# $VALUES is a file path in the scripts; read it with yaml_value, never jq.
+# Never put a secret here.
+
+# project_id: project the buckets live in.
+# location: bucket location, a region (us-east1) or a multi-region (US).
+# tfstate_bucket: an EXISTING bucket; this service writes under gcs-bucket/<service_id>/.
+project_id: ""
+location: ""
+tfstate_bucket: ""
+
+# app_k8s_namespace and identity_dimension: this file, then the worker
+# environment ($GCS_APP_K8S_NAMESPACE, $GCS_IDENTITY_DIMENSION), then the default.
+#
+# Link only. app_k8s_namespace: the Kubernetes namespace the linked apps' scopes
+# run in, where the scopes (IAM.MODE gke) create np-<application id>-<environment>.
+# Set it to the scopes' cluster.namespace: a fixed name, or the same pattern,
+# e.g. "{.namespace.slug}" or "{.namespace.slug}-{.scope.dimensions.environment}",
+# rendered per link as the scopes render it. Empty means "nullplatform", the
+# Containers scope's default.
+app_k8s_namespace: ""
+
+# Link only. identity_dimension: the dimension whose value names the app's
+# identity, np-<application id>-<value>. It has to be the same dimension the
+# scopes' IAM (IAM.MODE gke) names the service account by. Empty means
+# "environment".
+identity_dimension: ""

@@ -1,0 +1,70 @@
+# Grants the link's access level on the bucket to the linked app's Kubernetes
+# service account in the link's environment, np-<application id>-<environment>
+# (Workload Identity), then writes who got which role to the link. No
+# credential: the app's Google client libraries use that identity, and the
+# bucket name comes from the service (GCS_BUCKET_NAME).
+provider_categories:
+  - cloud-providers
+
+steps:
+  - name: build context
+    type: script
+    file: $SERVICE_PATH/scripts/build_context
+    output:
+      - name: OUTPUT_DIR
+        type: environment
+      - name: TOFU_MODULE_DIR
+        type: environment
+      - name: TOFU_INIT_VARIABLES
+        type: environment
+      - name: TOFU_VARIABLES
+        type: environment
+      - name: SERVICE_ID
+        type: environment
+      - name: BUCKET_NAME
+        type: environment
+      - name: PROJECT_ID
+        type: environment
+      - name: LOCATION
+        type: environment
+      - name: TFSTATE_BUCKET
+        type: environment
+      - name: TFSTATE_PREFIX
+        type: environment
+      - name: LINK_ID
+        type: environment
+      - name: APPLICATION_ID
+        type: environment
+      - name: LINK_ACCESS_LEVEL
+        type: environment
+      - name: LINK_ENVIRONMENT
+        type: environment
+      - name: APP_K8S_NAMESPACE
+        type: environment
+      - name: APP_K8S_SERVICE_ACCOUNT
+        type: environment
+
+  - name: build permissions context
+    type: script
+    file: $SERVICE_PATH/scripts/build_permissions_context
+    output:
+      - name: OUTPUT_DIR
+        type: environment
+      - name: TOFU_MODULE_DIR
+        type: environment
+      - name: TOFU_INIT_VARIABLES
+        type: environment
+      - name: TOFU_VARIABLES
+        type: environment
+      - name: NP_SKIP_TOFU
+        type: environment
+
+  - name: tofu
+    type: script
+    file: $SERVICE_PATH/scripts/do_tofu
+    configuration:
+      TOFU_ACTION: apply
+
+  - name: write link outputs
+    type: script
+    file: $SERVICE_PATH/scripts/write_link_outputs

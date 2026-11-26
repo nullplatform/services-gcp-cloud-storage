@@ -1,0 +1,42 @@
+# Updates the bucket in place (storage class, versioning, force_destroy).
+#
+# No credential step: the worker runs as the agent's Kubernetes service account,
+# which Workload Identity maps to the GCP roles the install grants it.
+provider_categories:
+  - cloud-providers
+
+steps:
+  - name: build context
+    type: script
+    file: $SERVICE_PATH/scripts/build_context
+    output:
+      - name: OUTPUT_DIR
+        type: environment
+      - name: TOFU_MODULE_DIR
+        type: environment
+      - name: TOFU_INIT_VARIABLES
+        type: environment
+      - name: TOFU_VARIABLES
+        type: environment
+      - name: SERVICE_ID
+        type: environment
+      - name: BUCKET_NAME
+        type: environment
+      - name: PROJECT_ID
+        type: environment
+      - name: LOCATION
+        type: environment
+      - name: TFSTATE_BUCKET
+        type: environment
+      - name: TFSTATE_PREFIX
+        type: environment
+
+  - name: tofu
+    type: script
+    file: $SERVICE_PATH/scripts/do_tofu
+    configuration:
+      TOFU_ACTION: apply
+
+  - name: write service outputs
+    type: script
+    file: $SERVICE_PATH/scripts/write_service_outputs

@@ -1,38 +1,56 @@
-# my-service
+# GCP Cloud Storage Bucket (nullplatform service)
 
-Template for new nullplatform `services-*` repositories: the CI every service repo needs and the minimal structure the agent runs. Everything specific to your service is yours to add.
+A private Cloud Storage bucket per service, and access to it per app through a link.
 
-## Start here
+- **Service** (`create`, `update`, `delete`): a bucket with uniform bucket-level access. `public_access_prevention` is `enforced` by default (the bucket can never be public); `inherited` defers to the project or organization policy. The name is derived once from the service slug (its name, normalized) and id, `np-gcs-<slug>-<id>`, and then pinned. A delete fails while the bucket holds objects, unless `force_destroy` is on.
+- **Link** `connect` (`link`, `link-update`, `unlink`): grants a role on this bucket only to the linked app's Kubernetes service account in the link's environment, through Workload Identity. `access_level`: `read` (`roles/storage.objectViewer`), `write` (`roles/storage.objectCreator`) or `read-write` (`roles/storage.objectUser`, the default). `path_prefix` (optional, e.g. `uploads/`) limits the role to objects under that prefix through an IAM condition; listing works when the request asks for that prefix (`prefix=uploads/`), and a list of the whole bucket is denied. The app gets the bucket name from the service (`GCS_BUCKET_NAME`, `GCS_PROJECT_ID`); the link exports nothing and creates no key.
 
-1. Replace `my-service` everywhere with your service slug (directory, `Dockerfile`, `mise.toml`, specs, `.github/workflows/*`):
-   ```bash
-   git mv my-service <slug>
-   grep -rl my-service . --exclude-dir=.git | xargs perl -pi -e 's/my-service/<slug>/g'
-   ```
-   Then set the display name (`"name": "My Service"`) in `<slug>/specs/service-spec.json.tpl`, and its `selectors`
-   (`category`, `sub_category`, `provider`) there and in `<slug>/specs/links/*.json.tpl` — the template's `Other` / `Other` / `AWS`
-   is what the nullplatform catalog and the docs [Sample services](https://docs.nullplatform.com/docs/services/sample-services) page show.
-   Keep the repository named `services-<slug>`: the docs catalog finds sample repositories by that prefix once they
-   have a release. A one-line GitHub description is welcome (`gh repo edit nullplatform/<repo> --description "..."`).
-   The release refuses to run while any template placeholder is left.
-2. Add the **Public ECR** service to the application in nullplatform. It creates the ECR Public repository and the publisher role; then set the secret and variable in [Publishing](#publishing).
-3. Write your steps in `<slug>/scripts/` and wire them in `<slug>/workflows/*.yaml`; define attributes in `<slug>/specs/`.
-4. Merge to `main` with a `feat:` or `fix:` commit: release-please opens the release PR, and merging it publishes the image.
+## Identity model
+The worker runs as the agent's Kubernetes service account through Workload Identity, with no keys.
 
-## Layout
+Linked apps get access as their own identity, one per application and environment, so only the linked app reaches the bucket. This **requires the scopes to run with `IAM.ENABLED: true` and `IAM.MODE: gke`** ([nullplatform/scopes](https://github.com/nullplatform/scopes), Kubernetes scope): the scopes of an app in an environment then run as the Kubernetes service account `np-<application id>-<environment>`, in the app's namespace. The link grants the role to `principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<project id>.svc.id.goog/subject/ns/<namespace>/sa/np-<application id>-<environment>`.
 
-```
-my-service/
-  entrypoint/   entrypoint (agent calls it), service and link (route an action to its workflow)
-  workflows/    one YAML per action: create, update, delete, link, link-update, unlink
-  scripts/      the steps the workflows run (example is a placeholder)
-  specs/        service-spec.json.tpl and links/connect.json.tpl
-  values.yaml   static configuration for the workflows
-Dockerfile      worker image on the shared worker-bridge base
-mise.toml       run it on your machine as a package (`np package run`)
-```
+- **Environment:** the value of the identity dimension, `environment` unless `identity_dimension` says otherwise, from the link's dimensions or, for a link to a scope, from that scope's. A link without it fails: links without that dimension are not supported in this version. `identity_dimension` **has to be the same dimension the scopes' IAM (`IAM.MODE: gke`) names the service account by**, or the binding goes to a service account no scope runs as.
+- **Name:** `<environment>` is the dimension value in lowercase, which must then be a DNS-1123 label (`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`); otherwise the link fails, as it does when `np-<application id>-<environment>` exceeds 63 characters. Nothing is rewritten or truncated, so two environments never share a name. `scripts/build_context` documents the exact rule, which the scopes apply too.
+- **Namespace:** `app_k8s_namespace` (`values.yaml` or `GCS_APP_K8S_NAMESPACE`), set to the scopes' `cluster.namespace`; `nullplatform` by default (the Containers scope's default). A value without `{` is used as is. A pattern, such as `{.namespace.slug}`, `{.account.slug}-{.namespace.slug}` or `{.namespace.slug}-{.scope.dimensions.environment}`, is rendered per link by the scopes' own engine (`scripts/render_k8s_namespace`, ported from nullplatform/scopes `k8s/naming/resolve_names`), against the app, its namespace and account (read from the API) and the link's dimensions, or the linked scope. A placeholder with no value at link time, such as `{.scope.slug}` on a link to dimensions, fails the link and names the placeholder. The result must be a DNS-1123 label, never `default` or `kube-*`. Not mirrored: a scope keeps the namespace it already runs in when the pattern changes later, so change the pattern only before the scopes exist.
+- **Every scope of the app in that environment** gets access, including scopes created after the link: no `link-update` needed. The binding works before the service account exists (GCP accepts it) and takes effect when the scopes run with it.
+- **`link-update`** reapplies the access level. **Unlink** revokes the binding from the link's own state (`gcs-bucket/<service_id>/links/<link_id>`).
+- **Deleting the service:** the platform requires removing its links first, so the unlinks revoke the bindings. A binding left over by a link that survives anyway belongs to the bucket's IAM policy and is deleted with the bucket; a later unlink then has nothing to revoke.
+- The cluster's Workload Identity pool must be the bucket's project (`<project id>.svc.id.goog`).
 
-A custom action slug `foo` runs `workflows/foo.yaml`.
+**Workload Identity sameness:** the grant goes to `ns/<namespace>/sa/np-<application id>-<environment>` in the project's pool (`<project>.svc.id.goog`), which every GKE cluster with Workload Identity in that project shares. A pod with the same namespace and service account name in another cluster of the project gets the same access. Keep one cluster per project, or one trusted set of clusters, when you use this link.
+
+**Predictable names:** the link grants access to `np-<application id>-<environment>` before that service account exists, so anyone who can create a service account with that name in the apps' namespace gets the access. Only the nullplatform agent (and cluster admins) should be able to create service accounts in that namespace.
+
+## Install
+- `specs/requirements/gcp`: roles for the agent's Kubernetes service account (Workload Identity): `storage.admin` limited to `np-gcs-*` buckets (keep the tfstate bucket outside that prefix), plus a custom role to create and list buckets; no service account roles (the link grants on the bucket, which `storage.admin` on `np-gcs-*` covers). Object access on the tfstate bucket only under `gcs-bucket/`, unless another install already grants it (`grant_tfstate_access = false`; then that grant applies, as the worker shares the agent's identity).
+- Link settings: `app_k8s_namespace` and `identity_dimension` resolve from `values.yaml`, then the worker environment (`GCS_APP_K8S_NAMESPACE`, `GCS_IDENTITY_DIMENSION`), then the defaults (`nullplatform`, `environment`). To set them only in your IaC, pass them in the [`nullplatform/agent`](https://github.com/nullplatform/tofu-modules/tree/main/nullplatform/agent) module's `extra_envs`, and mount the agent's secret into this package's worker (the module hands its environment only to the `containers` worker):
+
+  ```hcl
+  extra_envs = {
+    GCS_APP_K8S_NAMESPACE  = "{.namespace.slug}-{.scope.dimensions.environment}" # the scopes' cluster.namespace
+    GCS_IDENTITY_DIMENSION = "environment"                                       # the scopes' IAM dimension
+  }
+
+  worker = {
+    patches = [{
+      target = { package = "gcp-cloud-storage-bucket" }
+      merge = {
+        spec = {
+          containers = [{
+            name    = "worker"
+            envFrom = [{ secretRef = { name = "<agent-secret>" } }]
+          }]
+        }
+      }
+    }]
+  }
+  ```
+- Worker image: `Dockerfile` (`NP_PACKAGE_NAME=gcp-cloud-storage-bucket`), with `tofu`.
+- Published as the package `np-gcp-cloud-storage-bucket` (specification "GCP Cloud Storage Bucket") by `gcs-bucket/publish` on every release; install it with tofu-modules `nullplatform/service_package_installation`.
+
+## Placement
+`project_id`, `location` and `tfstate_bucket` resolve from `values.yaml`, then the cloud-providers provider (`.project.id`, `.services.region`, `.services.tfstate.bucket`), then the worker environment (`SERVICES_GCP_PROJECT`/`GOOGLE_CLOUD_PROJECT`, `SERVICES_GCP_REGION`, `SERVICES_TFSTATE_BUCKET`). State lives under `gcs-bucket/<service_id>/`: the bucket's in `deployment`, each link's in `links/<link_id>`.
 
 ## Run locally as a package
 
@@ -43,7 +61,7 @@ no publish. The two tasks in `mise.toml` are the whole contract with the CLI:
 
 | Command | Runs | Does |
 |---|---|---|
-| `np package build --image` | `mise run build:image` | Builds `my-service-worker:dev` |
+| `np package build --image` | `mise run build:image` | Builds `gcp-cloud-storage-worker:dev` |
 | `np package run` | `mise run run` | Builds the image, then starts the local agent |
 
 Prerequisites: **Docker** with host networking (Linux as is; on Docker Desktop
@@ -62,7 +80,7 @@ eval "$(aws configure export-credentials --format env)"   # cloud credentials as
 np package run --log-level DEBUG                          # Ctrl+C to stop
 ```
 
-The agent is tagged `package:my-service` and `local:<your user>`. It receives an
+The agent is tagged `package:gcp-cloud-storage-bucket` and `local:<your user>`. It receives an
 action only when the service's notification channel selects those tags, so
 point a channel at `local:<your user>` to route work to your machine.
 
@@ -80,7 +98,7 @@ pass `--no-forward-env` to forward nothing.
 |---|---|---|
 | `NP_API_KEY` | required | The key the agent registers with (`--api-key` also sets it) |
 | `NP_LOG_LEVEL` | `INFO` | Agent log level (`--log-level` also sets it) |
-| `NP_PACKAGE_SLUG` | `my-service` | The slug in the `package:<slug>` tag, when published under another slug |
+| `NP_PACKAGE_SLUG` | `gcp-cloud-storage-bucket` | The slug in the `package:<slug>` tag, when published under another slug |
 | `NP_LOCAL_USER` | `$USER` | The value of the `local:<user>` tag |
 | `NP_AGENT_IMAGE` | `controlplane-agent:latest` | The agent image; needs worker rules (0.11.1+) |
 
@@ -112,11 +130,13 @@ Beta images live in a separate repository that the beta role can write and the p
 
 ## Publishing
 
-After adding the **Public ECR** service to the application, set in this repository:
+Set in this repository:
 
 | Name | Kind | Value |
 |---|---|---|
-| `AWS_ROLE_ARN_ECR_PUSH` | secret | the publisher role ARN the Public ECR service returns |
+| `AWS_ROLE_ARN_ECR_PUSH` | secret | the publisher role ARN for `agent-plugins/services/gcp-cloud-storage`, created by the agent-plugins registration |
 | `NP_ARTIFACT_NRN` | variable | the NRN of the organization that owns the artifacts |
+| `PACKAGE_STATE_AWS_ACCOUNT_ID`, `PACKAGE_TFSTATE_BUCKET`, `PACKAGE_TFSTATE_REGION` | organization secrets | where the publish stack keeps its state; the state role is `github-actions-<repository>-package-state` in that account, by convention |
 
-`ARTIFACT_NP_API_KEY` comes from the organization. The release checks all three before building and fails with a clear error if one is missing. Beta images assume the role in the organization secret `AWS_BETA_ROLE_ARN` (no role is written in the workflow) and push to the image's `beta/` repository in ECR Public, which the dispatcher creates together with the production one. In this template repository neither workflow runs.
+`ARTIFACT_NP_API_KEY` comes from the organization. Each release publishes the
+package `np-gcp-cloud-storage-bucket` from `gcs-bucket/publish`.

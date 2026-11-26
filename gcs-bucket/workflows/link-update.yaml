@@ -1,0 +1,4 @@
+# Reapplies the link: a new access level replaces the role. Scopes created after
+# the link need no update: they run as the same per-environment identity.
+include:
+  - "$SERVICE_PATH/workflows/link.yaml"

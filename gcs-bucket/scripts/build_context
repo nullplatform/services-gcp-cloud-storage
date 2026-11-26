@@ -1,0 +1,335 @@
+#!/bin/bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# build_context: turns the nullplatform notification into the OpenTofu inputs
+# for a bucket action, and on link actions also exports the LINK_* values that
+# build_permissions_context reads next.
+#
+# Creates nothing and calls no cloud CLI: it only derives names and paths. The
+# tfstate bucket must already exist (the install creates it).
+# ---------------------------------------------------------------------------
+
+# $VALUES is a FILE PATH (np service workflow exec --values), not content.
+yaml_value() {
+  local key="$1" file="$2" raw val
+  raw=$(grep "^${key}:" "$file" 2>/dev/null | head -1) || true
+  [ -z "$raw" ] && { echo ""; return 0; }
+  val="${raw#*:}"
+  val="${val#"${val%%[![:space:]]*}"}"
+  case "$val" in
+    '"'*) val="${val#\"}"; val="${val%%\"*}" ;;
+    "'"*) val="${val#\'}"; val="${val%%\'*}" ;;
+    *) val="${val%%#*}"; val="${val%"${val##*[![:space:]]}"}" ;;
+  esac
+  echo "$val"
+}
+
+first_non_empty() {
+  local v
+  for v in "$@"; do
+    if [ -n "$v" ] && [ "$v" != "null" ]; then echo "$v"; return 0; fi
+  done
+  echo ""
+}
+
+# --- Service identity -------------------------------------------------------
+
+SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id // ""')
+# The notification's service carries its slug (from the name given at creation),
+# not the name itself; .service.name is kept as a fallback.
+SERVICE_NAME=$(echo "$CONTEXT" | jq -r '.service.slug // .service.name // ""')
+
+if [[ ! "$SERVICE_ID" =~ ^[A-Za-z0-9-]+$ ]]; then
+  echo "ERROR: invalid or missing .service.id '${SERVICE_ID}'" >&2
+  exit 1
+fi
+
+# Stored attributes merged with this action's parameters; parameters win.
+SERVICE_ATTRS=$(echo "$CONTEXT" | jq -c '(.service.attributes // {}) * (.parameters // {})')
+STORED_ATTRS=$(echo "$CONTEXT" | jq -c '.service.attributes // {}')
+
+# --- Bucket name: derived once, then pinned ---------------------------------
+# A bucket name is global and immutable: a new name means a new, empty bucket.
+# The stored name always wins; it is never taken from .parameters.
+STORED_BUCKET=$(echo "$STORED_ATTRS" | jq -r '.bucket_name // ""')
+_sid=$(printf '%s' "$SERVICE_ID" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | cut -c1-8)
+if [ -n "$STORED_BUCKET" ]; then
+  # Attributes can be written through the API: accept only a name this service
+  # issued for this service id, so a rewrite cannot point it at another bucket.
+  if [[ "$STORED_BUCKET" != np-gcs-* ]] || [[ "$STORED_BUCKET" != *"-${_sid}" ]]; then
+    echo "ERROR: stored bucket_name '${STORED_BUCKET}' was not issued by this service" >&2
+    exit 1
+  fi
+  BUCKET_NAME="$STORED_BUCKET"
+else
+  _slug=$(printf '%s' "$SERVICE_NAME" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | tr -s '-' | sed 's/^-//; s/-$//' | cut -c1-36 | sed 's/-$//')
+  BUCKET_NAME="np-gcs-${_slug:-bucket}-${_sid}"
+fi
+
+# GCS rules: 3-63 chars, lowercase letters, digits, "-" and "_", starting and
+# ending with a letter or digit, and never starting with "goog".
+if [[ ! "$BUCKET_NAME" =~ ^[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]$ ]] || [[ "$BUCKET_NAME" == goog* ]]; then
+  echo "ERROR: '${BUCKET_NAME}' is not a valid bucket name" >&2
+  exit 1
+fi
+
+STORAGE_CLASS=$(echo "$SERVICE_ATTRS" | jq -r '.storage_class // "STANDARD"')
+VERSIONING=$(echo "$SERVICE_ATTRS"    | jq -r 'if has("versioning") then .versioning else true end')
+FORCE_DESTROY=$(echo "$SERVICE_ATTRS" | jq -r '.force_destroy // false')
+PUBLIC_ACCESS_PREVENTION=$(echo "$SERVICE_ATTRS" | jq -r '.public_access_prevention // "enforced"')
+
+if [[ ! "$STORAGE_CLASS" =~ ^(STANDARD|NEARLINE|COLDLINE|ARCHIVE)$ ]]; then
+  echo "ERROR: invalid storage_class '${STORAGE_CLASS}' (STANDARD, NEARLINE, COLDLINE or ARCHIVE)" >&2
+  exit 1
+fi
+if [[ ! "$PUBLIC_ACCESS_PREVENTION" =~ ^(enforced|inherited)$ ]]; then
+  echo "ERROR: invalid public_access_prevention '${PUBLIC_ACCESS_PREVENTION}' (enforced or inherited)" >&2
+  exit 1
+fi
+for _b in "$VERSIONING" "$FORCE_DESTROY"; do
+  if [[ ! "$_b" =~ ^(true|false)$ ]]; then
+    echo "ERROR: invalid boolean '${_b}' for versioning or force_destroy" >&2
+    exit 1
+  fi
+done
+
+# --- GCP placement: values.yaml -> cloud-providers provider -> environment --
+
+V_PROJECT=$(yaml_value "project_id" "$VALUES")
+V_LOCATION=$(yaml_value "location" "$VALUES")
+V_TF_BUCKET=$(yaml_value "tfstate_bucket" "$VALUES")
+
+PLACEMENT_NRN=$(echo "$CONTEXT" | jq -r '.service.nrn // .link.scope.nrn // .entity_nrn // ""' 2>/dev/null) || PLACEMENT_NRN=""
+PLACEMENT_DIMENSIONS=$(echo "$CONTEXT" | jq -r '
+  (.service.dimensions // .link.dimensions // {})
+  | if type == "object" and length > 0 then [ to_entries[] | "\(.key):\(.value)" ] | join(",") else empty end' 2>/dev/null) || PLACEMENT_DIMENSIONS=""
+
+PROVIDER_ATTRS='{}'
+if [ -n "$PLACEMENT_NRN" ]; then
+  # --limit is not accepted together with --categories.
+  PROVIDER_ATTRS=$(np provider list --nrn "$PLACEMENT_NRN" --categories cloud-providers \
+    ${PLACEMENT_DIMENSIONS:+--dimensions "$PLACEMENT_DIMENSIONS"} --format json 2>/dev/null \
+    | jq -c '(.results // [])[0].attributes // {}' 2>/dev/null) || PROVIDER_ATTRS='{}'
+  [ -z "$PROVIDER_ATTRS" ] && PROVIDER_ATTRS='{}'
+fi
+
+PROJECT_ID=$(first_non_empty "$V_PROJECT" "$(echo "$PROVIDER_ATTRS" | jq -r '.project.id // ""')" "${SERVICES_GCP_PROJECT:-}" "${GOOGLE_CLOUD_PROJECT:-}")
+LOCATION=$(first_non_empty "$V_LOCATION" "$(echo "$PROVIDER_ATTRS" | jq -r '.services.region // ""')" "${SERVICES_GCP_REGION:-}")
+TFSTATE_BUCKET=$(first_non_empty "$V_TF_BUCKET" "$(echo "$PROVIDER_ATTRS" | jq -r '.services.tfstate.bucket // ""')" "${SERVICES_TFSTATE_BUCKET:-}")
+
+# The configured project is authoritative. Service attributes can be written
+# through the API, so a stored project that differs is refused, never followed.
+STORED_PROJECT=$(echo "$STORED_ATTRS" | jq -r '.project_id // ""')
+if [ -n "$STORED_PROJECT" ] && [ "$STORED_PROJECT" != "$PROJECT_ID" ]; then
+  echo "ERROR: the bucket is recorded in project '${STORED_PROJECT}', but the configuration resolves '${PROJECT_ID}'. Refusing to act on another project." >&2
+  exit 1
+fi
+# The location of an existing bucket comes from its own state (tofu keeps it);
+# only a create uses the configured one.
+
+if [[ ! "$PROJECT_ID" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]]; then
+  echo "ERROR: project_id '${PROJECT_ID}' is missing or invalid (values.yaml, provider .project.id, \$SERVICES_GCP_PROJECT, \$GOOGLE_CLOUD_PROJECT)" >&2
+  exit 1
+fi
+if [[ ! "$TFSTATE_BUCKET" =~ ^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$ ]]; then
+  echo "ERROR: tfstate_bucket '${TFSTATE_BUCKET}' is missing or invalid (values.yaml, provider .services.tfstate.bucket, \$SERVICES_TFSTATE_BUCKET)" >&2
+  exit 1
+fi
+if [[ ! "$LOCATION" =~ ^[A-Za-z0-9-]+$ ]]; then
+  echo "ERROR: location '${LOCATION}' is missing or invalid (values.yaml, provider .services.region, \$SERVICES_GCP_REGION)" >&2
+  exit 1
+fi
+
+echo "Bucket: ${BUCKET_NAME} (project=${PROJECT_ID}, location=${LOCATION}, class=${STORAGE_CLASS})"
+
+# --- tfstate: shared bucket, one prefix per service ------------------------
+
+TFSTATE_PREFIX="gcs-bucket/${SERVICE_ID}/deployment"
+OUTPUT_DIR="/tmp/np-service-${SERVICE_ID}"
+mkdir -p "$OUTPUT_DIR"
+TOFU_MODULE_DIR="$SERVICE_PATH/deployment"
+
+cat > "${OUTPUT_DIR}/backend.hcl" <<EOF
+bucket = "${TFSTATE_BUCKET}"
+prefix = "${TFSTATE_PREFIX}"
+EOF
+TOFU_INIT_VARIABLES=""
+
+LABELS=$(echo "$CONTEXT" | jq -c '.tags // {}
+  | with_entries(.key |= (ascii_downcase | gsub("[^a-z0-9_-]"; "_") | .[0:63])
+                 | .value |= (tostring | ascii_downcase | gsub("[^a-z0-9_-]"; "_") | .[0:63]))
+  | with_entries(select(.key | test("^[a-z]")))')
+
+TOFU_VARIABLES=$(jq -nc \
+  --arg service_id "$SERVICE_ID" --arg bucket_name "$BUCKET_NAME" \
+  --arg project_id "$PROJECT_ID" --arg location "$LOCATION" \
+  --arg storage_class "$STORAGE_CLASS" \
+  --argjson versioning "$VERSIONING" --argjson force_destroy "$FORCE_DESTROY" \
+  --arg public_access_prevention "$PUBLIC_ACCESS_PREVENTION" \
+  --argjson labels "$LABELS" \
+  '{service_id: $service_id, bucket_name: $bucket_name, project_id: $project_id,
+    location: $location, storage_class: $storage_class, versioning: $versioning,
+    force_destroy: $force_destroy, public_access_prevention: $public_access_prevention,
+    labels: $labels}')
+
+export SERVICE_ID SERVICE_NAME BUCKET_NAME PROJECT_ID LOCATION TFSTATE_BUCKET TFSTATE_PREFIX
+export OUTPUT_DIR TOFU_MODULE_DIR TOFU_INIT_VARIABLES TOFU_VARIABLES
+
+# --- Link context (link workflows only) ------------------------------------
+
+if [ "${ACTION_SOURCE:-}" = "link" ]; then
+  LINK_ID=$(echo "$CONTEXT" | jq -r '.link.id // ""')
+  if [[ ! "$LINK_ID" =~ ^[A-Za-z0-9-]+$ ]]; then
+    echo "ERROR: invalid or missing .link.id '${LINK_ID}'" >&2
+    exit 1
+  fi
+
+  # The linking app, not the one that owns the service.
+  APPLICATION_ID=$(echo "$CONTEXT" | jq -r '
+    ((.link.entity.nrn // "") | capture("application=(?<id>[0-9]+)").id) //
+    ((.link.entity_nrn // "") | capture("application=(?<id>[0-9]+)").id) //
+    .tags.application_id //
+    ((.entity_nrn // "") | capture("application=(?<id>[0-9]+)").id) //
+    ""')
+  if [[ ! "$APPLICATION_ID" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: could not resolve the application of link ${LINK_ID}" >&2
+    exit 1
+  fi
+
+  LINK_ATTRS=$(echo "$CONTEXT" | jq -c '(.link.attributes // {}) * (.parameters // {})')
+  LINK_ACCESS_LEVEL=$(echo "$LINK_ATTRS" | jq -r '.access_level // "read-write"')
+  if [[ ! "$LINK_ACCESS_LEVEL" =~ ^(read|write|read-write)$ ]]; then
+    echo "ERROR: invalid access_level '${LINK_ACCESS_LEVEL}' (read, write or read-write)" >&2
+    exit 1
+  fi
+  # path_prefix ends up inside an IAM condition expression: only plain object
+  # name characters, never a quote, a leading "/" or "..".
+  LINK_PATH_PREFIX=$(echo "$LINK_ATTRS" | jq -r '.path_prefix // ""')
+  if [ -n "$LINK_PATH_PREFIX" ] && { [[ ! "$LINK_PATH_PREFIX" =~ ^[A-Za-z0-9._-][A-Za-z0-9._/-]*$ ]] || [ "${#LINK_PATH_PREFIX}" -gt 512 ] || [[ "$LINK_PATH_PREFIX" == *..* ]]; }; then
+    echo "ERROR: invalid path_prefix '${LINK_PATH_PREFIX}' (letters, digits, '.', '_', '-' and '/', up to 512, not starting with '/', no '..')" >&2
+    exit 1
+  fi
+
+  # Who gets the role: the Kubernetes service account the scopes create for
+  # this app and environment when they run with IAM.MODE gke (nullplatform/scopes),
+  # np-<application id>-<environment>, in the namespace the app's scopes run in.
+  # The name is derived, not looked up: the binding can exist before the service
+  # account does, and every scope of the app in that environment shares it.
+  # app_k8s_namespace mirrors the scopes' cluster.namespace: a fixed name, or a
+  # pattern rendered below.
+  # Both settings resolve values.yaml -> worker environment -> default, so an
+  # organization can set them in its IaC only (the agent's extra_envs).
+  APP_K8S_NAMESPACE_CONFIG=$(first_non_empty "$(yaml_value "app_k8s_namespace" "$VALUES")" "${GCS_APP_K8S_NAMESPACE:-}" "nullplatform")
+  # identity_dimension: the dimension whose value names the identity. It must be
+  # the dimension the scopes' IAM (IAM.MODE gke) names the service account by.
+  IDENTITY_DIMENSION=$(first_non_empty "$(yaml_value "identity_dimension" "$VALUES")" "${GCS_IDENTITY_DIMENSION:-}" "environment")
+  if [[ ! "$IDENTITY_DIMENSION" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo "ERROR: invalid identity_dimension '${IDENTITY_DIMENSION}' (a dimension key: letters, digits, '_' and '-')" >&2
+    exit 1
+  fi
+
+  APP_K8S_NAMESPACE=""
+  LINK_ENVIRONMENT=""
+  APP_K8S_SERVICE_ACCOUNT=""
+  if [ "$(echo "$CONTEXT" | jq -r '.type // ""')" != "delete" ]; then
+    # The environment (the identity_dimension value): the link's own dimensions (a link to dimensions), else the
+    # dimensions of the scope it is linked to, from the notification or, when the
+    # notification carries only the scope id, from the API. An unlink needs none:
+    # destroy revokes what the link's state holds.
+    LINK_SCOPE_ID=$(echo "$CONTEXT" | jq -r '.link.scope.id // "" | tostring')
+    LINK_SCOPE=$(echo "$CONTEXT" | jq -c '.link.scope // {} | if type == "object" then . else {} end')
+    LINK_ENVIRONMENT=$(echo "$CONTEXT" | jq -r --arg d "$IDENTITY_DIMENSION" '.link.dimensions[$d] // .link.scope.dimensions[$d] // ""')
+    if [ -z "$LINK_ENVIRONMENT" ] && [ -n "$LINK_SCOPE_ID" ]; then
+      if [[ ! "$LINK_SCOPE_ID" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: invalid .link.scope.id '${LINK_SCOPE_ID}'" >&2
+        exit 1
+      fi
+      if ! SCOPE_OUT=$(np scope read --id "$LINK_SCOPE_ID" --format json 2>&1); then
+        echo "ERROR: could not read scope ${LINK_SCOPE_ID} of link ${LINK_ID}: ${SCOPE_OUT}" >&2
+        exit 1
+      fi
+      LINK_ENVIRONMENT=$(printf '%s' "$SCOPE_OUT" | jq -r --arg d "$IDENTITY_DIMENSION" '.dimensions[$d] // ""' 2>/dev/null) || LINK_ENVIRONMENT=""
+      LINK_SCOPE=$(printf '%s' "$SCOPE_OUT" | jq -c '. // {}' 2>/dev/null) || LINK_SCOPE='{}'
+    fi
+    if [ -z "$LINK_ENVIRONMENT" ]; then
+      echo "ERROR: link ${LINK_ID} has no '${IDENTITY_DIMENSION}' dimension: link the service to that dimension, or to a scope that has it." >&2
+      echo "       The bucket is granted to the app's identity per '${IDENTITY_DIMENSION}' (np-<application id>-<value>);" >&2
+      echo "       a link without it is not supported in this version (identity_dimension must match the scopes' IAM)." >&2
+      exit 1
+    fi
+
+    # Kubernetes service account name; nullplatform/scopes (IAM.MODE gke) derives
+    # the same name with the same rule, so keep both in step. The rule is
+    # injective (two environments never share a name), so nothing is rewritten:
+    #   1. environment = the value of the identity_dimension dimension
+    #      (default "environment"), ASCII lowercased;
+    #   2. it must then be a DNS-1123 label, ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$,
+    #      or the link fails;
+    #   3. name = "np-<application id>-<environment>"; over 63 characters, the
+    #      link fails (never truncated).
+    _env=$(printf '%s' "$LINK_ENVIRONMENT" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+    if [[ ! "$_env" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+      echo "ERROR: environment '${LINK_ENVIRONMENT}' of link ${LINK_ID} is not a valid Kubernetes name once lowercased" >&2
+      echo "       (letters, digits and '-', starting and ending with a letter or digit)" >&2
+      exit 1
+    fi
+    _prefix="np-${APPLICATION_ID}-"
+    if [ $(( ${#_prefix} + ${#_env} )) -gt 63 ]; then
+      echo "ERROR: service account name '${_prefix}${_env}' of link ${LINK_ID} exceeds 63 characters" >&2
+      exit 1
+    fi
+    APP_K8S_SERVICE_ACCOUNT="${_prefix}${_env}"
+
+    # The namespace, as nullplatform/scopes resolves cluster.namespace
+    # (k8s/utils/resolve_k8s_namespace): a value without "{" is used as is; a
+    # pattern is rendered by the scopes' engine (scripts/render_k8s_namespace)
+    # with a 63-character budget, against a context shaped like the scope's:
+    # .application, .namespace and .account (id and slug, from the API), and
+    # .scope, the linked scope with .dimensions set to the link's dimensions (for
+    # a link to dimensions, only .scope.dimensions). A placeholder with no value
+    # here, e.g. {.scope.slug} on a link to dimensions, fails the link.
+    # Not mirrored: the scopes keep the namespace a scope already runs in when
+    # the pattern changes later, and check the namespace in the cluster.
+    if [[ "$APP_K8S_NAMESPACE_CONFIG" == *"{"* ]]; then
+      _np_read() { # <entity> <id>: prints the entity as JSON or fails the link
+        local out
+        if [[ ! "$2" =~ ^[0-9]+$ ]] || ! out=$(np "$1" read --id "$2" --format json 2>&1); then
+          echo "ERROR: could not read ${1} '${2}' to render app_k8s_namespace '${APP_K8S_NAMESPACE_CONFIG}': ${out:-invalid id}" >&2
+          return 1
+        fi
+        printf '%s' "$out"
+      }
+      _app=$(_np_read application "$APPLICATION_ID") || exit 1
+      _ns='{}'; _acc='{}'
+      if [[ "$APP_K8S_NAMESPACE_CONFIG" == *"{.namespace"* || "$APP_K8S_NAMESPACE_CONFIG" == *"{.account"* ]]; then
+        _ns=$(_np_read namespace "$(printf '%s' "$_app" | jq -r '.namespace_id // ""')") || exit 1
+      fi
+      if [[ "$APP_K8S_NAMESPACE_CONFIG" == *"{.account"* ]]; then
+        _acc=$(_np_read account "$(printf '%s' "$_ns" | jq -r '.account_id // ""')") || exit 1
+      fi
+      _render_context=$(jq -nc --argjson app "$_app" --argjson ns "$_ns" --argjson acc "$_acc" \
+        --argjson scope "$LINK_SCOPE" --argjson link_dims "$(echo "$CONTEXT" | jq -c '.link.dimensions // {}')" '
+        { application: {id: $app.id, slug: $app.slug},
+          namespace: {id: $ns.id, slug: $ns.slug},
+          account: {id: $acc.id, slug: $acc.slug},
+          scope: ($scope + {dimensions: (($scope.dimensions // {}) + $link_dims)}) }')
+      # shellcheck source=/dev/null
+      source "$SERVICE_PATH/scripts/render_k8s_namespace"
+      if ! APP_K8S_NAMESPACE=$(CONTEXT="$_render_context" np_name_render 63 "$APP_K8S_NAMESPACE_CONFIG"); then
+        echo "ERROR: could not render app_k8s_namespace '${APP_K8S_NAMESPACE_CONFIG}' for link ${LINK_ID} (see the message above)" >&2
+        exit 1
+      fi
+    else
+      APP_K8S_NAMESPACE="$APP_K8S_NAMESPACE_CONFIG"
+    fi
+    if [ "${#APP_K8S_NAMESPACE}" -gt 63 ] || [[ ! "$APP_K8S_NAMESPACE" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] \
+       || [ "$APP_K8S_NAMESPACE" = "default" ] || [[ "$APP_K8S_NAMESPACE" == kube-* ]]; then
+      echo "ERROR: app_k8s_namespace '${APP_K8S_NAMESPACE_CONFIG}' gives '${APP_K8S_NAMESPACE}', not a valid Kubernetes namespace (DNS-1123 label, never default or kube-*)" >&2
+      exit 1
+    fi
+    echo "Link ${LINK_ID}: application ${APPLICATION_ID}, ${IDENTITY_DIMENSION} '${LINK_ENVIRONMENT}' -> ${APP_K8S_NAMESPACE}/${APP_K8S_SERVICE_ACCOUNT}"
+  fi
+
+  export LINK_ID APPLICATION_ID LINK_ACCESS_LEVEL LINK_PATH_PREFIX LINK_ENVIRONMENT APP_K8S_NAMESPACE APP_K8S_SERVICE_ACCOUNT
+fi
