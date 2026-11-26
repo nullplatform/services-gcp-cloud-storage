@@ -36,7 +36,9 @@ first_non_empty() {
 # --- Service identity -------------------------------------------------------
 
 SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id // ""')
-SERVICE_NAME=$(echo "$CONTEXT" | jq -r '.service.name // ""')
+# The notification's service carries its slug (from the name given at creation),
+# not the name itself; .service.name is kept as a fallback.
+SERVICE_NAME=$(echo "$CONTEXT" | jq -r '.service.slug // .service.name // ""')
 
 if [[ ! "$SERVICE_ID" =~ ^[A-Za-z0-9-]+$ ]]; then
   echo "ERROR: invalid or missing .service.id '${SERVICE_ID}'" >&2
