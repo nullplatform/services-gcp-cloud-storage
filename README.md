@@ -2,8 +2,8 @@
 
 A private Cloud Storage bucket per service, and access to it per app through a link.
 
-- **Service** (`create`, `update`, `delete`): a bucket with uniform bucket-level access and public access prevention enforced. The name is derived once from the service slug (its name, normalized) and id, `np-gcs-<slug>-<id>`, and then pinned. A delete fails while the bucket holds objects, unless `force_destroy` is on.
-- **Link** `connect` (`link`, `link-update`, `unlink`): grants a role on this bucket only to the linked app's Kubernetes service account in the link's environment, through Workload Identity. `access_level`: `read` (`roles/storage.objectViewer`), `write` (`roles/storage.objectCreator`) or `read-write` (`roles/storage.objectUser`, the default). The app gets the bucket name from the service (`GCS_BUCKET_NAME`, `GCS_PROJECT_ID`); the link exports nothing and creates no key.
+- **Service** (`create`, `update`, `delete`): a bucket with uniform bucket-level access. `public_access_prevention` is `enforced` by default (the bucket can never be public); `inherited` defers to the project or organization policy. The name is derived once from the service slug (its name, normalized) and id, `np-gcs-<slug>-<id>`, and then pinned. A delete fails while the bucket holds objects, unless `force_destroy` is on.
+- **Link** `connect` (`link`, `link-update`, `unlink`): grants a role on this bucket only to the linked app's Kubernetes service account in the link's environment, through Workload Identity. `access_level`: `read` (`roles/storage.objectViewer`), `write` (`roles/storage.objectCreator`) or `read-write` (`roles/storage.objectUser`, the default). `path_prefix` (optional, e.g. `uploads/`) limits the role to objects under that prefix through an IAM condition; listing works when the request asks for that prefix (`prefix=uploads/`), and a list of the whole bucket is denied. The app gets the bucket name from the service (`GCS_BUCKET_NAME`, `GCS_PROJECT_ID`); the link exports nothing and creates no key.
 
 ## Identity model
 The worker runs as the agent's Kubernetes service account through Workload Identity, with no keys.

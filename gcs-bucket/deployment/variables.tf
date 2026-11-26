@@ -45,3 +45,13 @@ variable "labels" {
   type    = map(string)
   default = {}
 }
+
+variable "public_access_prevention" {
+  type        = string
+  default     = "enforced"
+  description = "enforced: the bucket can never be public. inherited: the project or organization policy decides."
+  validation {
+    condition     = contains(["enforced", "inherited"], var.public_access_prevention)
+    error_message = "public_access_prevention must be enforced or inherited."
+  }
+}

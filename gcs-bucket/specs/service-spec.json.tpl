@@ -23,6 +23,7 @@
           { "type": "Control", "label": "Storage Class", "scope": "#/properties/storage_class" },
           { "type": "Control", "label": "Object Versioning", "scope": "#/properties/versioning" },
           { "type": "Control", "label": "Delete Even If Not Empty", "scope": "#/properties/force_destroy" },
+          { "type": "Control", "label": "Public Access Prevention", "scope": "#/properties/public_access_prevention" },
           { "type": "Control", "label": "Bucket Name", "scope": "#/properties/bucket_name" },
           { "type": "Control", "label": "Bucket URL", "scope": "#/properties/bucket_url" }
         ]
@@ -53,6 +54,15 @@
           "editableOn": ["create", "update"],
           "order": 3
         },
+        "public_access_prevention": {
+          "type": "string",
+          "title": "Public Access Prevention",
+          "default": "enforced",
+          "enum": ["enforced", "inherited"],
+          "description": "enforced: the bucket can never be made public. inherited: the project or organization policy decides, so a public grant becomes possible.",
+          "editableOn": ["create", "update"],
+          "order": 4
+        },
         "bucket_name": {
           "type": "string",
           "title": "Bucket Name",
@@ -60,7 +70,7 @@
           "visibleOn": ["read"],
           "editableOn": [],
           "description": "Globally unique name, derived from the service name (auto-populated, delivered as GCS_BUCKET_NAME)",
-          "order": 4
+          "order": 5
         },
         "bucket_url": {
           "type": "string",
@@ -68,7 +78,7 @@
           "visibleOn": ["read"],
           "editableOn": [],
           "description": "gs://<bucket_name> (auto-populated)",
-          "order": 5
+          "order": 6
         },
         "project_id": {
           "type": "string",
@@ -76,14 +86,14 @@
           "export": { "type": "environment_variable", "target": "GCS_PROJECT_ID", "secret": false },
           "visibleOn": ["read"],
           "editableOn": [],
-          "order": 6
+          "order": 7
         },
         "location": {
           "type": "string",
           "title": "Location",
           "visibleOn": ["read"],
           "editableOn": [],
-          "order": 7
+          "order": 8
         }
       }
     },

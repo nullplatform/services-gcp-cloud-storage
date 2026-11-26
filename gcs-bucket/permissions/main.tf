@@ -25,10 +25,29 @@ locals {
   }
 }
 
+# With a path_prefix the role holds only for objects under it, and listing
+# only when the request asks for that prefix (objectListPrefix): a list of the
+# whole bucket is denied. Without it, the role covers the whole bucket.
+locals {
+  prefix_condition = var.path_prefix == "" ? null : join(" || ", [
+    "resource.name.startsWith('projects/_/buckets/${var.bucket_name}/objects/${var.path_prefix}')",
+    "(resource.type == 'storage.googleapis.com/Bucket' && api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('${var.path_prefix}'))",
+  ])
+}
+
 resource "google_storage_bucket_iam_member" "link" {
   for_each = local.principals
 
   bucket = var.bucket_name
   role   = local.roles[var.access_level]
   member = each.value
+
+  dynamic "condition" {
+    for_each = local.prefix_condition == null ? [] : [local.prefix_condition]
+    content {
+      title       = "nullplatform-path-prefix"
+      description = "Objects under ${var.path_prefix} only."
+      expression  = condition.value
+    }
+  }
 }

@@ -25,6 +25,15 @@
           "editableOn": ["create", "update"],
           "order": 1
         },
+        "path_prefix": {
+          "type": "string",
+          "title": "Path Prefix",
+          "default": "",
+          "pattern": "^([A-Za-z0-9._-][A-Za-z0-9._/-]{0,511})?$",
+          "description": "Limit the access to objects whose name starts with this prefix, e.g. uploads/ (listing works when the request asks for that prefix). Empty: the whole bucket.",
+          "editableOn": ["create", "update"],
+          "order": 2
+        },
         "granted_to": {
           "type": "array",
           "items": { "type": "string" },
@@ -32,7 +41,7 @@
           "visibleOn": ["read"],
           "editableOn": [],
           "description": "Workload Identity principal that got the role: the app's service account in the link's environment (auto-populated)",
-          "order": 2
+          "order": 3
         },
         "role": {
           "type": "string",
@@ -40,7 +49,7 @@
           "visibleOn": ["read"],
           "editableOn": [],
           "description": "Role granted on the bucket (auto-populated)",
-          "order": 3
+          "order": 4
         }
       }
     },

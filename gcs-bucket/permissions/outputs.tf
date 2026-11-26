@@ -5,3 +5,7 @@ output "granted_to" {
 output "role" {
   value = local.roles[var.access_level]
 }
+
+output "path_prefix" {
+  value = var.path_prefix
+}
