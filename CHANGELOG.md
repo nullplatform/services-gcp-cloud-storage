@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0](https://github.com/nullplatform/services-gcp-cloud-storage/compare/v0.2.0-rc.2...v0.1.0) (2026-11-26)
+
+
+### Miscellaneous Chores
+
+* release 0.1.0 ([#3](https://github.com/nullplatform/services-gcp-cloud-storage/issues/3)) ([18ad1a1](https://github.com/nullplatform/services-gcp-cloud-storage/commit/18ad1a13159561101eb5d6a6fba99c1e6c1cfff4))
+
 ## [0.2.0-rc.2](https://github.com/nullplatform/services-gcp-cloud-storage/compare/v0.1.0-rc.2...v0.2.0-rc.2) (2026-11-26)
 
 
