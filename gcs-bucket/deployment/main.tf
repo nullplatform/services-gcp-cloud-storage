@@ -1,5 +1,6 @@
-# A private bucket: uniform bucket-level access (IAM only, no object ACLs) and
-# public access prevention enforced, so no link or object can make it public.
+# Uniform bucket-level access (IAM only, no object ACLs). Public access
+# prevention is enforced by default, so no link or object can make the bucket
+# public; "inherited" defers to the project or organization policy.
 resource "google_storage_bucket" "this" {
   name          = var.bucket_name
   project       = var.project_id
@@ -8,7 +9,7 @@ resource "google_storage_bucket" "this" {
   force_destroy = var.force_destroy
 
   uniform_bucket_level_access = true
-  public_access_prevention    = "enforced"
+  public_access_prevention    = var.public_access_prevention
 
   versioning {
     enabled = var.versioning

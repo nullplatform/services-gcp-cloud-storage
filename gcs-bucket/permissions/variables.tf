@@ -24,3 +24,13 @@ variable "workload_identities" {
   default     = []
   description = "Kubernetes service account of the linked app in the link's environment (np-<application id>-<environment>, created by the scopes with IAM.MODE gke). Empty on unlink: destroy works from the state."
 }
+
+variable "path_prefix" {
+  type        = string
+  default     = ""
+  description = "Limit the role to objects whose name starts with this prefix (e.g. uploads/). Empty: the whole bucket."
+  validation {
+    condition     = var.path_prefix == "" || (can(regex("^[A-Za-z0-9._-][A-Za-z0-9._/-]{0,511}$", var.path_prefix)) && !strcontains(var.path_prefix, ".."))
+    error_message = "path_prefix must be up to 512 letters, digits, '.', '_', '-' or '/', not start with '/' and not contain '..'."
+  }
+}

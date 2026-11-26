@@ -77,9 +77,14 @@ fi
 STORAGE_CLASS=$(echo "$SERVICE_ATTRS" | jq -r '.storage_class // "STANDARD"')
 VERSIONING=$(echo "$SERVICE_ATTRS"    | jq -r 'if has("versioning") then .versioning else true end')
 FORCE_DESTROY=$(echo "$SERVICE_ATTRS" | jq -r '.force_destroy // false')
+PUBLIC_ACCESS_PREVENTION=$(echo "$SERVICE_ATTRS" | jq -r '.public_access_prevention // "enforced"')
 
 if [[ ! "$STORAGE_CLASS" =~ ^(STANDARD|NEARLINE|COLDLINE|ARCHIVE)$ ]]; then
   echo "ERROR: invalid storage_class '${STORAGE_CLASS}' (STANDARD, NEARLINE, COLDLINE or ARCHIVE)" >&2
+  exit 1
+fi
+if [[ ! "$PUBLIC_ACCESS_PREVENTION" =~ ^(enforced|inherited)$ ]]; then
+  echo "ERROR: invalid public_access_prevention '${PUBLIC_ACCESS_PREVENTION}' (enforced or inherited)" >&2
   exit 1
 fi
 for _b in "$VERSIONING" "$FORCE_DESTROY"; do
@@ -161,10 +166,12 @@ TOFU_VARIABLES=$(jq -nc \
   --arg project_id "$PROJECT_ID" --arg location "$LOCATION" \
   --arg storage_class "$STORAGE_CLASS" \
   --argjson versioning "$VERSIONING" --argjson force_destroy "$FORCE_DESTROY" \
+  --arg public_access_prevention "$PUBLIC_ACCESS_PREVENTION" \
   --argjson labels "$LABELS" \
   '{service_id: $service_id, bucket_name: $bucket_name, project_id: $project_id,
     location: $location, storage_class: $storage_class, versioning: $versioning,
-    force_destroy: $force_destroy, labels: $labels}')
+    force_destroy: $force_destroy, public_access_prevention: $public_access_prevention,
+    labels: $labels}')
 
 export SERVICE_ID SERVICE_NAME BUCKET_NAME PROJECT_ID LOCATION TFSTATE_BUCKET TFSTATE_PREFIX
 export OUTPUT_DIR TOFU_MODULE_DIR TOFU_INIT_VARIABLES TOFU_VARIABLES
@@ -194,6 +201,13 @@ if [ "${ACTION_SOURCE:-}" = "link" ]; then
   LINK_ACCESS_LEVEL=$(echo "$LINK_ATTRS" | jq -r '.access_level // "read-write"')
   if [[ ! "$LINK_ACCESS_LEVEL" =~ ^(read|write|read-write)$ ]]; then
     echo "ERROR: invalid access_level '${LINK_ACCESS_LEVEL}' (read, write or read-write)" >&2
+    exit 1
+  fi
+  # path_prefix ends up inside an IAM condition expression: only plain object
+  # name characters, never a quote, a leading "/" or "..".
+  LINK_PATH_PREFIX=$(echo "$LINK_ATTRS" | jq -r '.path_prefix // ""')
+  if [ -n "$LINK_PATH_PREFIX" ] && { [[ ! "$LINK_PATH_PREFIX" =~ ^[A-Za-z0-9._-][A-Za-z0-9._/-]*$ ]] || [ "${#LINK_PATH_PREFIX}" -gt 512 ] || [[ "$LINK_PATH_PREFIX" == *..* ]]; }; then
+    echo "ERROR: invalid path_prefix '${LINK_PATH_PREFIX}' (letters, digits, '.', '_', '-' and '/', up to 512, not starting with '/', no '..')" >&2
     exit 1
   fi
 
@@ -317,5 +331,5 @@ if [ "${ACTION_SOURCE:-}" = "link" ]; then
     echo "Link ${LINK_ID}: application ${APPLICATION_ID}, ${IDENTITY_DIMENSION} '${LINK_ENVIRONMENT}' -> ${APP_K8S_NAMESPACE}/${APP_K8S_SERVICE_ACCOUNT}"
   fi
 
-  export LINK_ID APPLICATION_ID LINK_ACCESS_LEVEL LINK_ENVIRONMENT APP_K8S_NAMESPACE APP_K8S_SERVICE_ACCOUNT
+  export LINK_ID APPLICATION_ID LINK_ACCESS_LEVEL LINK_PATH_PREFIX LINK_ENVIRONMENT APP_K8S_NAMESPACE APP_K8S_SERVICE_ACCOUNT
 fi
